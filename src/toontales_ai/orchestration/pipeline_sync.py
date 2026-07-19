@@ -322,6 +322,10 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         task.finished_at = datetime.now(timezone.utc)
         task.provider_job_id = result.provider_job_id
         task.provider_status = result.status
+        # Успех после N неудачных попыток не должен оставлять error_payload от
+        # предыдущего провала висеть в снапшоте задачи (замечено при e2e-прогоне:
+        # COMPOSITION показывал status=completed вместе со старой ошибкой retry).
+        task.error_payload = None
         _charge(session, task)
         if not requires_media_asset:
             _materialize_media_assets(session, task, result)
@@ -331,12 +335,29 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         else:
             _advance(session, task)
 
+        if task.stage == Stage.COMPOSITION:
+            # COMPOSITION — терминальная стадия DAG (STAGE_IMMEDIATE_NEXT[COMPOSITION] == ()).
+            # P0, найдено живым e2e-прогоном: RunStatus.COMPLETED нигде не присваивался —
+            # GenerationRun.status навсегда оставался RUNNING даже после успешного
+            # завершения всего пайплайна, и клиент не мог узнать через run.status,
+            # что рендер готов (только по statuses отдельных Task).
+            run = session.get(GenerationRun, task.run_id)
+            run.status = RunStatus.COMPLETED
+            run.finished_at = datetime.now(timezone.utc)
+
     elif result.status == ProviderJobStatus.FAILED:
         if task.retry_count >= MAX_RETRIES:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": result.error_code, "detail": result.error_detail}
             task.finished_at = datetime.now(timezone.utc)
             _release(session, task)
+            # Та же находка, зеркально: перманентный провал любой стадии должен
+            # пометить весь run как FAILED, а не оставлять его в RUNNING навечно —
+            # иначе у пользователя нет сигнала, что нужен partial rerun.
+            run = session.get(GenerationRun, task.run_id)
+            if run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
+                run.status = RunStatus.FAILED
+                run.finished_at = datetime.now(timezone.utc)
         else:
             task.retry_count += 1
             task.status = TaskStatus.RETRY_SCHEDULED
