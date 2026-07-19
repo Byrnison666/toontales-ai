@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from toontales_ai.adapters.moderation import ModerationRejectedError
 from toontales_ai.api.deps import get_current_user_id, get_db_session
+from toontales_ai.api.rate_limit import check_rate_limit
 from toontales_ai.api.v1.schemas import (
     GenerateProjectRequest,
     GenerateProjectResponse,
@@ -18,7 +20,12 @@ from toontales_ai.api.v1.schemas import (
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import Stage
 from toontales_ai.domain.models import GenerationRun, MediaAsset, Project, Scene, Task
-from toontales_ai.orchestration.pipeline_async import InsufficientCreditsError, request_partial_rerun, start_run
+from toontales_ai.orchestration.pipeline_async import (
+    InsufficientCreditsError,
+    InvalidPartialRerunError,
+    request_partial_rerun,
+    start_run,
+)
 from toontales_ai.storage.s3 import presigned_get_url
 from toontales_ai.ws.tickets import issue_ticket
 
@@ -46,6 +53,8 @@ async def generate_project(
     session: AsyncSession = Depends(get_db_session),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ) -> GenerateProjectResponse:
+    check_rate_limit(user_id=user_id, action="generate", limit_per_minute=_settings.rate_limit_generate_per_minute)
+
     project = Project(user_id=user_id, name=body.project_name)
     session.add(project)
     await session.flush()
@@ -54,6 +63,8 @@ async def generate_project(
         run = await start_run(session, project_id=project.id, user_id=user_id, script_text=body.script_text)
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc))
+    except ModerationRejectedError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
     return GenerateProjectResponse(
         project_id=project.id,
@@ -114,6 +125,7 @@ async def partial_rerun(
     session: AsyncSession = Depends(get_db_session),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ) -> GenerateProjectResponse:
+    check_rate_limit(user_id=user_id, action="partial_rerun", limit_per_minute=_settings.rate_limit_generate_per_minute)
     await _load_run_with_ownership(session, run_id, user_id)
 
     try:
@@ -127,6 +139,8 @@ async def partial_rerun(
         )
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc))
+    except InvalidPartialRerunError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return GenerateProjectResponse(
         project_id=new_run.project_id,

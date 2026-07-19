@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     jwt_secret: str = ""
 
+    # fail-closed по умолчанию (review.md §10) — недоступность модератора блокирует контент.
+    moderation_fail_open: bool = False
+
+    rate_limit_generate_per_minute: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -11,7 +11,12 @@ import redis
 from toontales_ai.config.settings import get_settings
 
 _settings = get_settings()
-redis_client = redis.Redis.from_url(_settings.redis_url, decode_responses=True)
+redis_client = redis.Redis.from_url(
+    _settings.redis_url,
+    decode_responses=True,
+    socket_connect_timeout=1.0,
+    socket_timeout=1.0,
+)
 
 
 def _key(ticket: str) -> str:

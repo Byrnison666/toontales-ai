@@ -6,19 +6,22 @@ loop и своя sync Session на каждый вызов (review.md §7 — н
 между задачами)."""
 
 import asyncio
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from celery import Task as CeleryTask
-from celery.exceptions import Retry
 from sqlalchemy import select
 
-from toontales_ai.adapters.base import ProviderJobResult, StageInput
+from toontales_ai.adapters.base import ProviderJobResult, ProviderSubmission, StageInput
 from toontales_ai.adapters.registry import get_adapter
-from toontales_ai.domain.enums import ProviderJobStatus, Stage, TaskStatus
-from toontales_ai.domain.models import Scene, Task
+from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
+from toontales_ai.domain.models import MediaAsset, Scene, Task
 from toontales_ai.orchestration.pipeline_sync import complete_task
+from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
 from toontales_ai.storage.db import SyncSessionLocal
+from toontales_ai.storage.s3 import download_to_path, upload_from_path
 from toontales_ai.workers.celery_app import celery_app
 
 # Классы ошибок, которые считаются transient и подлежат Celery-level retry.
@@ -31,15 +34,71 @@ def _exponential_backoff(attempt: int, base: int = 2, cap: int = MAX_POLL_BACKOF
     return min(cap, base * (2**attempt))
 
 
-def _run_composition_stub(stage_input: StageInput):
-    from toontales_ai.adapters.base import ProviderSubmission
+def _run_composition(session, task: Task) -> ProviderSubmission:
+    """Реальная FFmpeg-сборка (v2.md stage 6): скачивает per-scene клипы стадии
+    LIPSYNC (канонический "финальный клип сцены" в DAG — см. STAGE_PREDECESSORS),
+    склеивает и загружает результат обратно в S3. Требует реального object storage
+    с уже загруженными артефактами — при stub-адаптерах (без реального S3) упадёт
+    на скачивании, это ожидаемо до подключения настоящих provider-адаптеров."""
+    scenes = session.execute(
+        select(Scene).where(Scene.generation_run_id == task.run_id).order_by(Scene.scene_index)
+    ).scalars().all()
+    if not scenes:
+        raise CompositionError(f"run {task.run_id} has no scenes to compose")
+
+    with tempfile.TemporaryDirectory(prefix="toontales-compose-") as tmp:
+        tmp_dir = Path(tmp)
+        clips: list[SceneClip] = []
+        for scene in scenes:
+            asset = session.execute(
+                select(MediaAsset)
+                .join(Task, Task.id == MediaAsset.task_id)
+                .where(
+                    MediaAsset.scene_id == scene.id,
+                    MediaAsset.kind == MediaKind.VIDEO,
+                    Task.stage == Stage.LIPSYNC,
+                )
+                .order_by(MediaAsset.created_at.desc())
+            ).scalars().first()
+            if asset is None:
+                raise CompositionError(f"no lipsync video asset for scene {scene.id}")
+
+            local_path = tmp_dir / f"scene_{scene.scene_index}.mp4"
+            download_to_path(asset.storage_key, local_path)
+            clips.append(SceneClip(video_path=local_path))
+
+        output_path = tmp_dir / "final.mp4"
+        compose_scenes(clips, output_path=output_path)
+
+        final_storage_key = f"runs/{task.run_id}/final_render/{task.id}.mp4"
+        upload_from_path(output_path, final_storage_key, content_type="video/mp4")
+        size_bytes = output_path.stat().st_size
 
     result = ProviderJobResult(
         provider_job_id=None,
         status=ProviderJobStatus.SUCCEEDED,
-        artifacts=({"storage_key": f"stub/final/{stage_input.task_id}", "content_type": "video/mp4"},),
+        artifacts=({"storage_key": final_storage_key, "content_type": "video/mp4", "size_bytes": size_bytes},),
     )
     return ProviderSubmission(provider_job_id=None, status=ProviderJobStatus.SUCCEEDED, result=result)
+
+
+def _failed_submission(error_code: str, error_detail: str) -> ProviderSubmission:
+    """Единая точка построения FAILED ProviderSubmission — используется и для
+    доменных ошибок composition, и для любых прочих исключений во время submit,
+    чтобы они шли через complete_task() и его retry_count/RETRY_SCHEDULED/release
+    логику вместо того, чтобы утекать из Celery-задачи необработанными (P0-баг:
+    раньше ловился только CompositionError, а botocore/OSError/FileNotFoundError
+    оставляли Task навечно в SUBMITTING без release hold)."""
+    return ProviderSubmission(
+        provider_job_id=None,
+        status=ProviderJobStatus.FAILED,
+        result=ProviderJobResult(
+            provider_job_id=None,
+            status=ProviderJobStatus.FAILED,
+            error_code=error_code,
+            error_detail=error_detail,
+        ),
+    )
 
 
 def _build_stage_input(session, task: Task) -> StageInput:
@@ -79,14 +138,32 @@ def process_task(self: CeleryTask, task_id: str) -> None:
         stage_input = _build_stage_input(session, task)
         session.commit()
 
-        if task.stage == Stage.COMPOSITION:
-            # Composition — локальный FFmpeg-слой, не внешний provider adapter
-            # (v2.md stage 6). Реальная сборка FFmpeg вне объёма текущего шага —
-            # заглушка эмулирует немедленный успех для сквозной прогонки пайплайна.
-            submission = _run_composition_stub(stage_input)
-        else:
-            adapter = get_adapter(task.stage)
-            submission = asyncio.run(adapter.submit(stage_input, idempotency_key=task.idempotency_key))
+        try:
+            if task.stage == Stage.COMPOSITION:
+                # Composition — локальный FFmpeg-слой, не внешний provider adapter (v2.md stage 6).
+                try:
+                    submission = _run_composition(session, task)
+                except CompositionError as exc:
+                    submission = _failed_submission("COMPOSITION_FAILED", str(exc))
+            else:
+                adapter = get_adapter(task.stage)
+                submission = asyncio.run(adapter.submit(stage_input, idempotency_key=task.idempotency_key))
+        except TRANSIENT_ERRORS:
+            # Известная transient-ошибка (сеть/таймаут) — возвращаем Task в PENDING,
+            # иначе Celery-level retry (autoretry_for) наткнётся на guard в начале
+            # функции (status not in PENDING/RETRY_SCHEDULED), станет no-op'ом, и Task
+            # навсегда останется в SUBMITTING (P0: retry механизм не мог фактически
+            # повторить попытку после первого падения).
+            task.status = TaskStatus.PENDING
+            session.commit()
+            raise
+        except Exception as exc:
+            # Любая иная ошибка (botocore/S3, отсутствующий ffmpeg, повреждённый файл
+            # и т.п.) — не транзиентная в понимании Celery-level retry, но и не должна
+            # оставлять Task в SUBMITTING навсегда (P0). Заворачиваем в тот же FAILED-путь,
+            # что и CompositionError — дальше решает domain-level retry_count/release
+            # в complete_task().
+            submission = _failed_submission("TASK_EXECUTION_ERROR", str(exc))
 
     with SyncSessionLocal() as session:
         if submission.result is not None:

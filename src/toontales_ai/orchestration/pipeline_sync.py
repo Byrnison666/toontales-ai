@@ -3,22 +3,44 @@
 complete_task() под SELECT...FOR UPDATE, что сериализует гонку между ними."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from toontales_ai.adapters.base import ProviderJobResult
+from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import (
     STAGE_PREDECESSORS,
     CreditTransactionType,
+    MediaKind,
     ProviderJobStatus,
+    RetentionClass,
     RunStatus,
     Stage,
     TaskStatus,
 )
-from toontales_ai.domain.models import CreditTransaction, GenerationRun, PipelineOutbox, Project, Scene, Task, User
+from toontales_ai.domain.models import (
+    CreditTransaction,
+    GenerationRun,
+    MediaAsset,
+    PipelineOutbox,
+    Project,
+    Scene,
+    Task,
+    User,
+)
+
+# Стадия -> тип артефакта в MediaAsset. STORYBOARD не отображается — его
+# результат структурные данные (scenes JSON), а не файл в object storage.
+STAGE_MEDIA_KIND: dict[Stage, MediaKind] = {
+    Stage.IMAGE: MediaKind.IMAGE,
+    Stage.VIDEO: MediaKind.VIDEO,
+    Stage.AUDIO: MediaKind.AUDIO,
+    Stage.LIPSYNC: MediaKind.VIDEO,
+    Stage.COMPOSITION: MediaKind.FINAL_RENDER,
+}
 from toontales_ai.orchestration.idempotency import (
     credit_charge_key,
     credit_release_key,
@@ -172,7 +194,12 @@ def _advance(session: Session, task: Task) -> None:
 
 
 def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> None:
-    scenes_data = (storyboard_task.output_snapshot or {}).get("scenes", [])[:MAX_ASSUMED_SCENES]
+    # output_snapshot хранится как {"artifacts": [...]}; StoryboardStubAdapter кладёт
+    # scenes внутрь первого artifact-элемента, а не на верхний уровень (pre-existing
+    # баг: раньше здесь читался output_snapshot["scenes"], которого никогда не
+    # существовало, — раскадровка никогда не создавала Scene/downstream-задачи).
+    artifacts = (storyboard_task.output_snapshot or {}).get("artifacts") or []
+    scenes_data = (artifacts[0].get("scenes", []) if artifacts else [])[:MAX_ASSUMED_SCENES]
     for idx, scene_data in enumerate(scenes_data):
         scene = Scene(
             generation_run_id=storyboard_task.run_id,
@@ -197,19 +224,90 @@ def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> N
                 _hold_and_enqueue(session, task_id=new_id, run_id=storyboard_task.run_id, cost=STAGE_COST[stage])
 
 
+def _materialize_media_assets(session: Session, task: Task, result: ProviderJobResult) -> int:
+    """Артефакты успешно завершённого Task становятся first-class MediaAsset-записями
+    (v2.md §2.2), а не остаются только внутри Task.output_snapshot JSON.
+
+    Возвращает число реально созданных MediaAsset — вызывающий код (complete_task)
+    использует это, чтобы не завершать Task успехом без единого валидного артефакта
+    (review.md: провайдер вернул SUCCEEDED с пустым/битым artifacts не должен
+    молча оплачиваться и продвигать пайплайн дальше)."""
+    kind = STAGE_MEDIA_KIND.get(task.stage)
+    if kind is None:
+        return 0
+    ephemeral_ttl = timedelta(days=get_settings().ephemeral_asset_ttl_days)
+    created = 0
+    for artifact in result.artifacts:
+        storage_key = artifact.get("storage_key")
+        if not storage_key:
+            continue
+        retention = RetentionClass.PERMANENT if kind == MediaKind.FINAL_RENDER else RetentionClass.EPHEMERAL
+        session.add(
+            MediaAsset(
+                run_id=task.run_id,
+                task_id=task.id,
+                scene_id=task.scene_id,
+                kind=kind,
+                storage_key=storage_key,
+                content_type=artifact.get("content_type", "application/octet-stream"),
+                size_bytes=artifact.get("size_bytes", 0),
+                checksum=artifact.get("checksum", ""),
+                retention_class=retention,
+                expires_at=None if retention == RetentionClass.PERMANENT else datetime.now(timezone.utc) + ephemeral_ttl,
+            )
+        )
+        created += 1
+    return created
+
+
 def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobResult) -> None:
     task = session.execute(select(Task).where(Task.id == task_id).with_for_update()).scalar_one()
 
     if task.status in TERMINAL_STATUSES:
         return  # already resolved — второй из poll/webhook гонки становится no-op
 
-    if result.status == ProviderJobStatus.SUCCEEDED:
+    # Стадия требует хотя бы одного валидного MediaAsset (storyboard — исключение,
+    # её результат структурные данные scenes, а не файл в object storage).
+    requires_media_asset = task.stage in STAGE_MEDIA_KIND
+    succeeded = result.status == ProviderJobStatus.SUCCEEDED
+
+    if succeeded and requires_media_asset:
+        # Материализуем внутри той же транзакции, чтобы проверить count до COMMIT
+        # решения о статусе — SUCCEEDED с пустым/битым artifacts не должен
+        # молча оплачиваться и продвигать пайплайн (review.md).
+        assets_created = _materialize_media_assets(session, task, result)
+        if assets_created == 0:
+            succeeded = False
+            result = ProviderJobResult(
+                provider_job_id=result.provider_job_id,
+                status=ProviderJobStatus.FAILED,
+                error_code="NO_VALID_ARTIFACT",
+                error_detail="provider reported success but returned no usable artifact",
+            )
+    elif succeeded and task.stage == Stage.STORYBOARD:
+        # Симметричная проверка для STORYBOARD: SUCCEEDED с пустой раскадровкой не должен
+        # оплачиваться и оставлять run без единой Scene/downstream-задачи (review.md).
+        scenes_payload = None
+        if result.artifacts:
+            scenes_payload = result.artifacts[0].get("scenes")
+        if not scenes_payload:
+            succeeded = False
+            result = ProviderJobResult(
+                provider_job_id=result.provider_job_id,
+                status=ProviderJobStatus.FAILED,
+                error_code="NO_VALID_ARTIFACT",
+                error_detail="provider reported success but returned no scenes",
+            )
+
+    if succeeded:
         task.status = TaskStatus.COMPLETED
         task.output_snapshot = {"artifacts": list(result.artifacts)}
         task.finished_at = datetime.now(timezone.utc)
         task.provider_job_id = result.provider_job_id
         task.provider_status = result.status
         _charge(session, task)
+        if not requires_media_asset:
+            _materialize_media_assets(session, task, result)
 
         if task.stage == Stage.STORYBOARD:
             _materialize_scenes_and_fanout(session, task)
