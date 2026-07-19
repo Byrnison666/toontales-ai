@@ -16,7 +16,11 @@ down_revision: Union[str, None] = "0001_initial_schema"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-outbox_status_enum = postgresql.ENUM("pending", "publishing", "published", name="outboxstatus")
+# create_type=False: тип создаётся один раз явно ниже (checkfirst=True) — см.
+# такой же фикс и комментарий в 0001_initial_schema.py.
+outbox_status_enum = postgresql.ENUM(
+    "pending", "publishing", "published", name="outboxstatus", create_type=False
+)
 
 
 def upgrade() -> None:

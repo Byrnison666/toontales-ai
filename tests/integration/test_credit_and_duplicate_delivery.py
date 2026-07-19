@@ -32,7 +32,14 @@ def _seed_run_with_pending_task(session, *, stage: Stage = Stage.IMAGE, cost: in
 def test_duplicate_completion_charges_only_once(db_session):
     """Регрессия review.md §2/§5: гонка poll/webhook не должна привести к двойному charge."""
     user, run, task = _seed_run_with_pending_task(db_session)
-    success = ProviderJobResult(provider_job_id="job-1", status=ProviderJobStatus.SUCCEEDED)
+    # artifacts обязателен для media-стадии (IMAGE) с версии P1.6-фикса:
+    # SUCCEEDED без валидного artifact теперь трактуется как NO_VALID_ARTIFACT,
+    # а не как оплаченный успех — тест проверяет идемпотентность charge, не это.
+    success = ProviderJobResult(
+        provider_job_id="job-1",
+        status=ProviderJobStatus.SUCCEEDED,
+        artifacts=({"storage_key": "test/duplicate-delivery", "content_type": "image/png"},),
+    )
 
     complete_task(db_session, task_id=task.id, result=success)
     complete_task(db_session, task_id=task.id, result=success)  # повторная доставка

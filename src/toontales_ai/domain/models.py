@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    Enum,
     ForeignKey,
     Index,
     UniqueConstraint,
@@ -25,8 +26,28 @@ from toontales_ai.domain.enums import (
 )
 
 
+def _pg_enum(enum_cls: type) -> Enum:
+    """values_callable=member.value (не member.name): Postgres-типы в alembic-миграциях
+    созданы со значениями "initial"/"pending"/... По умолчанию SQLAlchemy для
+    Mapped[SomeEnum] без values_callable сериализует member.name ("INITIAL"), что
+    не совпадает ни с одной меткой enum-типа в БД — INSERT падает с
+    InvalidTextRepresentation на первой же реальной записи в любую enum-колонку."""
+    return Enum(enum_cls, values_callable=lambda obj: [e.value for e in obj])
+
+
 class Base(DeclarativeBase):
-    pass
+    type_annotation_map = {
+        ConsistencyMethod: _pg_enum(ConsistencyMethod),
+        RunTrigger: _pg_enum(RunTrigger),
+        RunStatus: _pg_enum(RunStatus),
+        Stage: _pg_enum(Stage),
+        TaskStatus: _pg_enum(TaskStatus),
+        ProviderJobStatus: _pg_enum(ProviderJobStatus),
+        MediaKind: _pg_enum(MediaKind),
+        RetentionClass: _pg_enum(RetentionClass),
+        CreditTransactionType: _pg_enum(CreditTransactionType),
+        OutboxStatus: _pg_enum(OutboxStatus),
+    }
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:

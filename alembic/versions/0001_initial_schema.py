@@ -16,12 +16,17 @@ down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# create_type=False везде: типы создаются один раз явно в upgrade() ниже
+# (checkfirst=True). Без этого флага SQLAlchemy при компиляции DDL каждой
+# op.create_table(), использующей эти же объекты в колонках, повторно
+# генерирует CREATE TYPE без checkfirst и падает с DuplicateObjectError —
+# из-за этого миграция никогда не проходила ни разу на реальном Postgres.
 consistency_method_enum = postgresql.ENUM(
-    "reference_image", "lora", "seed", name="consistencymethod"
+    "reference_image", "lora", "seed", name="consistencymethod", create_type=False
 )
-run_trigger_enum = postgresql.ENUM("initial", "partial_rerun", name="runtrigger")
+run_trigger_enum = postgresql.ENUM("initial", "partial_rerun", name="runtrigger", create_type=False)
 run_status_enum = postgresql.ENUM(
-    "pending", "running", "completed", "failed", "canceled", name="runstatus"
+    "pending", "running", "completed", "failed", "canceled", name="runstatus", create_type=False
 )
 stage_enum = postgresql.ENUM(
     "storyboard_generation",
@@ -31,6 +36,7 @@ stage_enum = postgresql.ENUM(
     "lipsync",
     "composition",
     name="stage",
+    create_type=False,
 )
 task_status_enum = postgresql.ENUM(
     "pending",
@@ -42,16 +48,17 @@ task_status_enum = postgresql.ENUM(
     "failed",
     "canceled",
     name="taskstatus",
+    create_type=False,
 )
 provider_job_status_enum = postgresql.ENUM(
-    "queued", "processing", "succeeded", "failed", "canceled", name="providerjobstatus"
+    "queued", "processing", "succeeded", "failed", "canceled", name="providerjobstatus", create_type=False
 )
 media_kind_enum = postgresql.ENUM(
-    "image", "audio", "video", "subtitles", "storyboard", "final_render", name="mediakind"
+    "image", "audio", "video", "subtitles", "storyboard", "final_render", name="mediakind", create_type=False
 )
-retention_class_enum = postgresql.ENUM("ephemeral", "permanent", name="retentionclass")
+retention_class_enum = postgresql.ENUM("ephemeral", "permanent", name="retentionclass", create_type=False)
 credit_transaction_type_enum = postgresql.ENUM(
-    "hold", "charge", "release", "adjustment", name="credittransactiontype"
+    "hold", "charge", "release", "adjustment", name="credittransactiontype", create_type=False
 )
 
 
