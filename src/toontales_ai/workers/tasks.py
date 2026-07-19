@@ -17,19 +17,23 @@ from sqlalchemy import select
 
 from toontales_ai.adapters.base import ProviderJobResult, ProviderSubmission, StageInput
 from toontales_ai.adapters.registry import get_adapter
+from toontales_ai.adapters.video.runway import RunwayTransientError
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import MediaAsset, Scene, Task
 from toontales_ai.orchestration.pipeline_sync import complete_task
 from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
 from toontales_ai.storage.db import SyncSessionLocal
-from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path, upload_from_path
+from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path, presigned_get_url, upload_from_path
 from toontales_ai.workers.celery_app import celery_app
 
 # Классы ошибок, которые считаются transient и подлежат Celery-level retry.
 # httpx.TransportError — общий базовый класс сетевых сбоев httpx (ConnectError,
 # {Connect,Read,Write,Pool}Timeout и т.п.) при вызове реальных vendor-адаптеров
 # (напр. ElevenLabsAdapter) — не подклассы builtin ConnectionError/TimeoutError.
-TRANSIENT_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError)
+# RunwayTransientError — 429/5xx от Runway (перегрузка/сбой сервиса, а не
+# ошибка запроса) — не должны сжигать domain-level retry_count наравне с
+# permanent-ошибками (invalid input и т.п.).
+TRANSIENT_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError, RunwayTransientError)
 
 MAX_POLL_BACKOFF_SECONDS = 60
 
@@ -137,6 +141,34 @@ def _build_stage_input(session, task: Task) -> StageInput:
                 "camera_movement": scene.camera_movement,
                 "mood_notes": scene.mood_notes,
             }
+            if task.stage == Stage.VIDEO:
+                # v2.md stage 3: "Вход stage: source image, motion prompt, camera
+                # movement instructions..." — реальному video-адаптеру (RunwayAdapter)
+                # нужен HTTPS URL уже сгенерированного изображения сцены, а не только
+                # текстовые поля. Раньше этого поля не было вовсе — не имело значения
+                # для стаб-адаптеров, но блокировало реальную интеграцию.
+                image_assets = session.execute(
+                    select(MediaAsset)
+                    .join(Task, Task.id == MediaAsset.task_id)
+                    .where(
+                        MediaAsset.scene_id == scene.id,
+                        MediaAsset.kind == MediaKind.IMAGE,
+                        Task.stage == Stage.IMAGE,
+                    )
+                ).scalars().all()
+                if len(image_assets) > 1:
+                    # Task.idempotency_key уникален на (run, stage, scene) — при
+                    # нормальной работе тут ровно один IMAGE Task на сцену, значит и
+                    # один MediaAsset. Больше одного означает, что провайдер вернул
+                    # несколько image-артефактов в одном результате (см. аналогичный
+                    # fail-fast для lipsync-артефакта в _run_composition) — явная
+                    # ошибка вместо молчаливого выбора "последнего по created_at".
+                    raise ValueError(
+                        f"ambiguous IMAGE asset for scene {scene.id}: "
+                        f"{len(image_assets)} candidates, expected exactly one"
+                    )
+                if image_assets:
+                    payload["source_image_url"] = presigned_get_url(image_assets[0].storage_key)
     return StageInput(task_id=str(task.id), scene_id=str(task.scene_id) if task.scene_id else None, payload=payload)
 
 
@@ -158,10 +190,14 @@ def process_task(self: CeleryTask, task_id: str) -> None:
         task.status = TaskStatus.SUBMITTING
         task.attempt_no += 1
         task.celery_task_id = self.request.id
-        stage_input = _build_stage_input(session, task)
         session.commit()
 
         try:
+            # Внутри try: _build_stage_input может бросить (напр. неоднозначный
+            # IMAGE MediaAsset для VIDEO-стадии) — раньше вызывалась до try/except
+            # и такая ошибка утекала из Celery-задачи необработанной, минуя
+            # domain-level FAILED/retry_count путь ниже.
+            stage_input = _build_stage_input(session, task)
             if task.stage == Stage.COMPOSITION:
                 # Composition — локальный FFmpeg-слой, не внешний provider adapter (v2.md stage 6).
                 try:
@@ -225,7 +261,26 @@ def poll_task(self: CeleryTask, task_id: str) -> None:
         provider_job_id = task.provider_job_id
         poll_attempt = task.attempt_no
 
-    result: ProviderJobResult = asyncio.run(adapter.poll(provider_job_id))
+    try:
+        result: ProviderJobResult = asyncio.run(adapter.poll(provider_job_id))
+    except TRANSIENT_ERRORS:
+        # Celery-level autoretry_for обработает: poll_task не переводит Task ни в
+        # какой промежуточный статус перед вызовом poll() (в отличие от process_task
+        # с его SUBMITTING), так что повторная доставка того же poll_task безопасна.
+        raise
+    except Exception as exc:
+        # P0, найдено при добавлении первого реального async job+poll адаптера
+        # (RunwayAdapter): раньше исключение из adapter.poll() вообще не ловилось
+        # здесь и утекало из Celery-задачи необработанным — Task навсегда оставался
+        # в WAITING_PROVIDER (стаб-адаптеры никогда не доходили до этого пути,
+        # так как их poll() никогда не вызывался — они завершаются синхронно в
+        # submit()). Заворачиваем в тот же FAILED-путь, что и остальной пайплайн.
+        result = ProviderJobResult(
+            provider_job_id=provider_job_id,
+            status=ProviderJobStatus.FAILED,
+            error_code="POLL_ERROR",
+            error_detail=str(exc),
+        )
 
     if result.status in (ProviderJobStatus.QUEUED, ProviderJobStatus.PROCESSING):
         delay = result.retry_after_seconds or _exponential_backoff(poll_attempt)

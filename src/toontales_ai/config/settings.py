@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = ""
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
+    runway_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
