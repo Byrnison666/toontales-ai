@@ -35,4 +35,10 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+# autodiscover_tasks по конвенции ищет только модуль с именем "tasks" в каждом
+# указанном пакете — workers/beat.py так никогда не подхватывался, и worker
+# отклонял dispatch_outbox/reconcile_stale_tasks как "unregistered task" (P0,
+# найдено при живом e2e-прогоне worker+beat: без dispatch_outbox ни одна задача,
+# поставленная в PipelineOutbox через API, никогда не попадала бы в Celery).
+celery_app.conf.imports = ("toontales_ai.workers.tasks", "toontales_ai.workers.beat")
 celery_app.autodiscover_tasks(["toontales_ai.workers"])

@@ -141,7 +141,7 @@ def _create_task_and_hold(session: Session, *, run_id: uuid.UUID, stage: Stage, 
 
 def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID, cost: int) -> None:
     user_id = _run_user_id(session, run_id)
-    session.execute(
+    inserted_id = session.execute(
         pg_insert(CreditTransaction)
         .values(
             user_id=user_id,
@@ -152,7 +152,24 @@ def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID
             idempotency_key=f"hold:{task_id}",
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
-    )
+        .returning(CreditTransaction.id)
+    ).scalar_one_or_none()
+    if inserted_id is not None:
+        # Баланс списывается только при реально вставленном hold (ON CONFLICT DO
+        # NOTHING защищает от повторного вызова при гонке двух join-веток на
+        # _advance — без этой проверки повторный вызов списал бы дважды).
+        #
+        # P0, найдено живым e2e-прогоном (FastAPI + Celery worker + Postgres):
+        # раньше эта функция создавала только CreditTransaction(HOLD), но НИКОГДА
+        # не уменьшала user.credit_balance — списание происходило лишь для самой
+        # первой (STORYBOARD) задачи run, созданной напрямую в start_run/
+        # request_partial_rerun. В результате ни одна стадия после STORYBOARD не
+        # была реально оплачена, а _release() при падении такой стадии НАЧИСЛЯЛ
+        # на баланс деньги, которые никогда не списывались — баланс пользователя
+        # рос при каждом сбое downstream-стадии вместо корректного списания.
+        user = session.execute(select(User).where(User.id == user_id).with_for_update()).scalar_one()
+        user.credit_balance -= cost
+
     session.execute(
         pg_insert(PipelineOutbox)
         .values(id=uuid.uuid4(), event_type="enqueue_task", aggregate_id=task_id, payload={"task_id": str(task_id)})

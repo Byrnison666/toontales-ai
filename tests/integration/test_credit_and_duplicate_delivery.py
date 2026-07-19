@@ -6,7 +6,7 @@ from toontales_ai.adapters.base import ProviderJobResult
 from toontales_ai.domain.enums import CreditTransactionType, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import CreditTransaction, GenerationRun, Project, Task, User
 from toontales_ai.orchestration.idempotency import task_idempotency_key
-from toontales_ai.orchestration.pipeline_sync import complete_task
+from toontales_ai.orchestration.pipeline_sync import _create_task_and_hold, _hold_and_enqueue, complete_task
 
 
 def _seed_run_with_pending_task(session, *, stage: Stage = Stage.IMAGE, cost: int = 30):
@@ -72,6 +72,45 @@ def test_failed_task_releases_hold_after_max_retries(db_session):
     )
     assert len(releases) == 1
     assert releases[0].amount == 50
+
+
+def test_hold_and_enqueue_actually_deducts_balance(db_session):
+    """P0, найдено живым e2e-прогоном (FastAPI+Celery worker+Postgres): _hold_and_enqueue
+    (используется для всех стадий после самой первой STORYBOARD-задачи run) создавала
+    CreditTransaction(HOLD), но никогда не уменьшала user.credit_balance. В проде это
+    означало, что ни одна стадия после storyboard не была реально оплачена, а release
+    при её падении НАЧИСЛЯЛ деньги, которые никогда не списывались."""
+    user, run, _ = _seed_run_with_pending_task(db_session)
+    balance_before = user.credit_balance
+
+    key = task_idempotency_key(run_id=run.id, stage=Stage.IMAGE, scene_id=None, input_version="v2")
+    task_id = _create_task_and_hold(db_session, run_id=run.id, stage=Stage.IMAGE, scene_id=None, key=key, cost=40)
+    _hold_and_enqueue(db_session, task_id=task_id, run_id=run.id, cost=40)
+    db_session.commit()
+
+    db_session.refresh(user)
+    assert user.credit_balance == balance_before - 40
+
+    # Повторный вызов (эмулирует гонку двух join-веток на _advance) не должен
+    # списать повторно — ON CONFLICT DO NOTHING на CreditTransaction защищает и hold,
+    # и списание баланса от задваивания.
+    _hold_and_enqueue(db_session, task_id=task_id, run_id=run.id, cost=40)
+    db_session.commit()
+    db_session.refresh(user)
+    assert user.credit_balance == balance_before - 40
+
+    # Провал задачи после MAX_RETRIES должен вернуть баланс РОВНО к исходному —
+    # не больше (это и был баг: release добавлял деньги, которые не списывались).
+    failure = ProviderJobResult(provider_job_id=None, status=ProviderJobStatus.FAILED, error_code="E", error_detail="boom")
+    for _ in range(10):
+        db_session.refresh(user)
+        task = db_session.get(Task, task_id)
+        if task.status == TaskStatus.FAILED:
+            break
+        complete_task(db_session, task_id=task_id, result=failure)
+
+    db_session.refresh(user)
+    assert user.credit_balance == balance_before
 
 
 def test_run_ownership_isolation(db_session):
