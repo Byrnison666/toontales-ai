@@ -21,13 +21,18 @@ from toontales_ai.domain.models import MediaAsset, Scene, Task
 from toontales_ai.orchestration.pipeline_sync import complete_task
 from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
 from toontales_ai.storage.db import SyncSessionLocal
-from toontales_ai.storage.s3 import download_to_path, upload_from_path
+from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path, upload_from_path
 from toontales_ai.workers.celery_app import celery_app
 
 # Классы ошибок, которые считаются transient и подлежат Celery-level retry.
 TRANSIENT_ERRORS = (ConnectionError, TimeoutError)
 
 MAX_POLL_BACKOFF_SECONDS = 60
+
+# Лимит на скачиваемый per-scene клип перед FFmpeg (review.md §10 P1): недоверенный/
+# подменённый S3-объект не должен заполнить /tmp или спровоцировать OOM до того, как
+# сработает лимит выходного файла composition.MAX_OUTPUT_FILE_BYTES.
+MAX_COMPOSITION_INPUT_BYTES = 500 * 1024 * 1024
 
 
 def _exponential_backoff(attempt: int, base: int = 2, cap: int = MAX_POLL_BACKOFF_SECONDS) -> int:
@@ -50,7 +55,7 @@ def _run_composition(session, task: Task) -> ProviderSubmission:
         tmp_dir = Path(tmp)
         clips: list[SceneClip] = []
         for scene in scenes:
-            asset = session.execute(
+            candidates = session.execute(
                 select(MediaAsset)
                 .join(Task, Task.id == MediaAsset.task_id)
                 .where(
@@ -58,13 +63,27 @@ def _run_composition(session, task: Task) -> ProviderSubmission:
                     MediaAsset.kind == MediaKind.VIDEO,
                     Task.stage == Stage.LIPSYNC,
                 )
-                .order_by(MediaAsset.created_at.desc())
-            ).scalars().first()
-            if asset is None:
+            ).scalars().all()
+            if not candidates:
                 raise CompositionError(f"no lipsync video asset for scene {scene.id}")
+            if len(candidates) > 1:
+                # Сегодня LIPSYNC-адаптеры всегда возвращают ровно один artifact (см.
+                # ImmediateMediaStubAdapter), поэтому это не должно происходить. Явный
+                # fail-fast вместо "просто взять последний по created_at" (review.md
+                # §10 P2: недетерминированный выбор мог тихо подставить не тот клип,
+                # напр. thumbnail вместо видео, если реальный провайдер когда-нибудь
+                # вернёт несколько video-артефактов на один Task).
+                raise CompositionError(
+                    f"ambiguous lipsync video asset for scene {scene.id}: "
+                    f"{len(candidates)} candidates, expected exactly one"
+                )
+            asset = candidates[0]
 
             local_path = tmp_dir / f"scene_{scene.scene_index}.mp4"
-            download_to_path(asset.storage_key, local_path)
+            try:
+                download_to_path(asset.storage_key, local_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
+            except DownloadSizeExceededError as exc:
+                raise CompositionError(str(exc)) from exc
             clips.append(SceneClip(video_path=local_path))
 
         output_path = tmp_dir / "final.mp4"

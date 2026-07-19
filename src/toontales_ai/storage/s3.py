@@ -26,7 +26,27 @@ def presigned_get_url(storage_key: str, *, ttl_seconds: int = PRESIGNED_URL_TTL_
     )
 
 
-def download_to_path(storage_key: str, destination) -> None:
+class DownloadSizeExceededError(Exception):
+    pass
+
+
+def download_to_path(storage_key: str, destination, *, max_bytes: int | None = None) -> None:
+    """max_bytes: до скачивания проверяет ContentLength через HEAD (review.md §10 P1:
+    "FFmpeg-входы не ограничены по диску/RAM" — недоверенный/подменённый объект мог
+    заполнить /tmp или спровоцировать OOM до срабатывания лимита выходного файла).
+
+    Известное ограничение (TOCTOU, не в объёме этого фикса): HEAD и последующий
+    download_file не привязаны к одной версии объекта — переслав другой (больший)
+    объект под тем же storage_key между двумя вызовами, можно обойти проверку.
+    Полное решение — потоковое скачивание с посчётом фактических байт (или
+    S3 Object Versioning + VersionId), не входит в текущий шаг."""
+    if max_bytes is not None:
+        head = _s3_client.head_object(Bucket=_settings.s3_bucket, Key=storage_key)
+        size = head["ContentLength"]
+        if size > max_bytes:
+            raise DownloadSizeExceededError(
+                f"object {storage_key} is {size} bytes, exceeds limit {max_bytes} bytes"
+            )
     _s3_client.download_file(_settings.s3_bucket, storage_key, str(destination))
 
 
