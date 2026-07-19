@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     rate_limit_generate_per_minute: int = 5
 
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model_id: str = "eleven_multilingual_v2"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -54,3 +54,9 @@ def upload_from_path(source_path, storage_key: str, *, content_type: str) -> Non
     _s3_client.upload_file(
         str(source_path), _settings.s3_bucket, storage_key, ExtraArgs={"ContentType": content_type}
     )
+
+
+def upload_bytes(data: bytes, storage_key: str, *, content_type: str) -> None:
+    """Загрузка in-memory результата (например, синхронного TTS-ответа вендора)
+    без промежуточного файла на диске."""
+    _s3_client.put_object(Bucket=_settings.s3_bucket, Key=storage_key, Body=data, ContentType=content_type)

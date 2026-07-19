@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from celery import Task as CeleryTask
 from sqlalchemy import select
 
@@ -25,7 +26,10 @@ from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path,
 from toontales_ai.workers.celery_app import celery_app
 
 # Классы ошибок, которые считаются transient и подлежат Celery-level retry.
-TRANSIENT_ERRORS = (ConnectionError, TimeoutError)
+# httpx.TransportError — общий базовый класс сетевых сбоев httpx (ConnectError,
+# {Connect,Read,Write,Pool}Timeout и т.п.) при вызове реальных vendor-адаптеров
+# (напр. ElevenLabsAdapter) — не подклассы builtin ConnectionError/TimeoutError.
+TRANSIENT_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError)
 
 MAX_POLL_BACKOFF_SECONDS = 60
 
