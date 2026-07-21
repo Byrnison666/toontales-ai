@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: toontales
+          POSTGRES_PASSWORD: toontales
+          POSTGRES_DB: toontales
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U toontales -d toontales"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      TOONTALES_DATABASE_URL: postgresql+asyncpg://toontales:toontales@localhost:5432/toontales
+      TOONTALES_TEST_DATABASE_URL: postgresql+psycopg://toontales:toontales@localhost:5432/toontales_test
+      TOONTALES_REDIS_URL: redis://localhost:6379/0
+      TOONTALES_S3_ACCESS_KEY: ci-s3-access-key
+      TOONTALES_S3_SECRET_KEY: ci-s3-secret-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client
+
+      - name: Install project dependencies
+        run: pip install -e '.[dev]'
+
+      # Фикстура integration-тестов удаляет схему, поэтому ей нужна отдельная БД.
+      - name: Create integration test database
+        env:
+          PGPASSWORD: toontales
+        run: psql -h localhost -U toontales -d toontales -v ON_ERROR_STOP=1 -c 'CREATE DATABASE toontales_test'
+
+      - name: Generate JWT secret
+        run: openssl rand -hex 32 | sed 's/^/TOONTALES_JWT_SECRET=/' >> "$GITHUB_ENV"
+
+      - name: Apply database migrations
+        run: alembic upgrade head
+
+      - name: Run tests
+        run: pytest tests/unit tests/integration -q

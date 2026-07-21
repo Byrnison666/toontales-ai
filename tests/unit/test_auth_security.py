@@ -49,9 +49,16 @@ def test_create_and_decode_access_token_roundtrip():
 
 
 def test_decode_access_token_rejects_tampered_signature():
+    """Флейк, найденный CI-аудитом: правка ПОСЛЕДНЕГО base64url-символа иногда
+    меняет только неиспользуемые padding-биты последнего символа, а не реальные
+    декодированные байты подписи — HMAC тогда совпадает несмотря на "изменённую"
+    строку. Правим символ в начале signature-части (третий сегмент token'а), где
+    искажение гарантированно меняет декодированные байты."""
     user_id = uuid.uuid4()
     token = create_access_token(user_id)
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    header, payload, signature = token.split(".")
+    tampered_char = "A" if signature[0] != "A" else "B"
+    tampered = f"{header}.{payload}.{tampered_char}{signature[1:]}"
     with pytest.raises(InvalidTokenError):
         decode_access_token(tampered)
 
