@@ -142,6 +142,35 @@ def _create_task_and_hold(session: Session, *, run_id: uuid.UUID, stage: Stage, 
 
 def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID, cost: int) -> None:
     user_id = _run_user_id(session, run_id)
+    # SELECT ... FOR UPDATE до insert HOLD: сериализует конкурентные downstream-hold
+    # для одного user_id, чтобы проверка баланса ниже не гонялась с параллельным
+    # списанием (тот же паттерн, что start_run/request_partial_rerun).
+    user = session.execute(select(User).where(User.id == user_id).with_for_update()).scalar_one()
+
+    if user.credit_balance < cost:
+        # P0 (аудит финансовой корректности): start_run/request_partial_rerun
+        # проверяют баланс на старте run по ОЦЕНКЕ (max_budget/estimated_total_cost),
+        # но между стадиями баланс может измениться (несколько run одного user
+        # параллельно, drain друг друга). Раньше здесь ничего не проверялось —
+        # decrement ниже упирался в CheckConstraint("credit_balance >= 0") на
+        # уровне Postgres, IntegrityError не входит в TRANSIENT_ERRORS, вся
+        # транзакция complete_task() откатывалась (включая уже выставленный
+        # task.status=COMPLETED для ПРЕДЫДУЩЕЙ стадии), а Celery-задача падала
+        # необработанной — run зависал в RUNNING навсегда без сигнала пользователю.
+        # Явный FAILED с понятной причиной вместо тихого зависания.
+        task = session.get(Task, task_id)
+        task.status = TaskStatus.FAILED
+        task.error_payload = {
+            "code": "INSUFFICIENT_CREDITS",
+            "detail": f"balance {user.credit_balance} < required {cost}",
+        }
+        task.finished_at = datetime.now(timezone.utc)
+        run = session.get(GenerationRun, run_id)
+        if run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
+            run.status = RunStatus.FAILED
+            run.finished_at = datetime.now(timezone.utc)
+        return
+
     inserted_id = session.execute(
         pg_insert(CreditTransaction)
         .values(
@@ -159,16 +188,6 @@ def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID
         # Баланс списывается только при реально вставленном hold (ON CONFLICT DO
         # NOTHING защищает от повторного вызова при гонке двух join-веток на
         # _advance — без этой проверки повторный вызов списал бы дважды).
-        #
-        # P0, найдено живым e2e-прогоном (FastAPI + Celery worker + Postgres):
-        # раньше эта функция создавала только CreditTransaction(HOLD), но НИКОГДА
-        # не уменьшала user.credit_balance — списание происходило лишь для самой
-        # первой (STORYBOARD) задачи run, созданной напрямую в start_run/
-        # request_partial_rerun. В результате ни одна стадия после STORYBOARD не
-        # была реально оплачена, а _release() при падении такой стадии НАЧИСЛЯЛ
-        # на баланс деньги, которые никогда не списывались — баланс пользователя
-        # рос при каждом сбое downstream-стадии вместо корректного списания.
-        user = session.execute(select(User).where(User.id == user_id).with_for_update()).scalar_one()
         user.credit_balance -= cost
 
     session.execute(

@@ -3,7 +3,7 @@
 import uuid
 
 from toontales_ai.adapters.base import ProviderJobResult
-from toontales_ai.domain.enums import CreditTransactionType, ProviderJobStatus, Stage, TaskStatus
+from toontales_ai.domain.enums import CreditTransactionType, ProviderJobStatus, RunStatus, Stage, TaskStatus
 from toontales_ai.domain.models import CreditTransaction, GenerationRun, Project, Task, User
 from toontales_ai.orchestration.idempotency import task_idempotency_key
 from toontales_ai.orchestration.pipeline_sync import _create_task_and_hold, _hold_and_enqueue, complete_task
@@ -111,6 +111,41 @@ def test_hold_and_enqueue_actually_deducts_balance(db_session):
 
     db_session.refresh(user)
     assert user.credit_balance == balance_before
+
+
+def test_hold_and_enqueue_fails_task_explicitly_when_balance_insufficient(db_session):
+    """P0 (аудит финансовой корректности): раньше _hold_and_enqueue не проверяла
+    достаточность баланса перед списанием — decrement уходил в CheckConstraint
+    ("credit_balance >= 0") на уровне Postgres, IntegrityError не входит в
+    TRANSIENT_ERRORS воркера, вся транзакция complete_task() откатывалась
+    (включая только что выставленный COMPLETED статус ПРЕДЫДУЩЕЙ стадии), а
+    Celery-задача падала необработанной — run зависал в RUNNING навсегда без
+    сигнала пользователю. Теперь — явный FAILED Task/Run вместо тихого зависания."""
+    user, run, _ = _seed_run_with_pending_task(db_session)
+    user.credit_balance = 10
+    db_session.commit()
+
+    key = task_idempotency_key(run_id=run.id, stage=Stage.VIDEO, scene_id=None, input_version="v3")
+    task_id = _create_task_and_hold(db_session, run_id=run.id, stage=Stage.VIDEO, scene_id=None, key=key, cost=200)
+    _hold_and_enqueue(db_session, task_id=task_id, run_id=run.id, cost=200)
+    db_session.commit()  # не должно бросить IntegrityError
+
+    task = db_session.get(Task, task_id)
+    assert task.status == TaskStatus.FAILED
+    assert task.error_payload["code"] == "INSUFFICIENT_CREDITS"
+
+    db_session.refresh(run)
+    assert run.status == RunStatus.FAILED
+
+    db_session.refresh(user)
+    assert user.credit_balance == 10  # баланс не тронут — hold не состоялся
+
+    holds = (
+        db_session.query(CreditTransaction)
+        .filter_by(task_id=task_id, type=CreditTransactionType.HOLD)
+        .all()
+    )
+    assert holds == []  # CreditTransaction(HOLD) не создавалась для непрошедшей проверки
 
 
 def test_run_ownership_isolation(db_session):

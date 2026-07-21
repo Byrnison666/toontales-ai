@@ -36,6 +36,16 @@ from toontales_ai.workers.celery_app import celery_app
 # RunwayTransientError/RunwayImageTransientError/SyncTransientError/AnthropicTransientError —
 # 429/5xx от Runway/Sync.so/Anthropic (перегрузка/сбой сервиса, а не ошибка запроса) —
 # не должны сжигать domain-level retry_count наравне с permanent-ошибками (invalid input и т.п.).
+#
+# Известный принятый риск (аудит финансовой корректности, не устранён): если
+# httpx.TransportError/таймаут случится ПОСЛЕ того как провайдер принял запрос
+# (напр. таймаут на чтение ответа, не на запись), но ДО того как мы сохранили
+# provider_job_id, Celery-retry вызовет adapter.submit() заново с тем же
+# idempotency_key — а сам провайдер это поле не учитывает как ключ дедупликации
+# (ни Runway, ни ElevenLabs, ни Sync.so, ни Anthropic не документируют
+# server-side idempotency-key support). Возможна повторная платная генерация
+# у провайдера. Полное решение требует idempotency-key поддержки на стороне
+# каждого провайдера — вне объёма текущего шага.
 TRANSIENT_ERRORS = (
     ConnectionError,
     TimeoutError,

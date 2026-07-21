@@ -56,8 +56,17 @@ async def start_run(
     user = (
         await session.execute(select(User).where(User.id == user_id).with_for_update())
     ).scalar_one()
-    if user.credit_balance < storyboard_cost:
-        raise InsufficientCreditsError(f"balance {user.credit_balance} < required {storyboard_cost}")
+    # P0 (найдено аудитом финансовой корректности): раньше проверялась только
+    # storyboard_cost (50) вместо max_budget (~1680 на 6 сцен) — пользователь с
+    # балансом, скажем, 100 мог СТАРТОВАТЬ run, а на 2-3 стадии
+    # pipeline_sync._hold_and_enqueue списывало бы баланс в минус и упиралось
+    # в CheckConstraint("credit_balance >= 0") на уровне Postgres: вся
+    # транзакция complete_task() откатывалась, Task не COMPLETED, Celery-задача
+    # падала с необработанным IntegrityError — run зависал в RUNNING навсегда
+    # без ошибки пользователю. request_partial_rerun() ниже уже правильно
+    # проверяет весь estimated_total_cost — здесь тот же паттерн.
+    if user.credit_balance < max_budget:
+        raise InsufficientCreditsError(f"balance {user.credit_balance} < required {max_budget}")
 
     run = GenerationRun(
         project_id=project_id,
