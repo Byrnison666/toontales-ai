@@ -6,12 +6,14 @@ loop и своя sync Session на каждый вызов (review.md §7 — н
 между задачами)."""
 
 import asyncio
+import random
 import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+import redis
 from celery import Task as CeleryTask
 from sqlalchemy import select
 
@@ -21,13 +23,42 @@ from toontales_ai.adapters.lipsync.sync_so import SyncTransientError
 from toontales_ai.adapters.registry import get_adapter
 from toontales_ai.adapters.storyboard.anthropic import AnthropicTransientError
 from toontales_ai.adapters.video.runway import RunwayTransientError
+from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import MediaAsset, Scene, Task
+from toontales_ai.orchestration import provider_semaphore
 from toontales_ai.orchestration.pipeline_sync import complete_task
 from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
 from toontales_ai.storage.db import SyncSessionLocal
 from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path, presigned_get_url, upload_from_path
 from toontales_ai.workers.celery_app import celery_app
+
+_SEMAPHORE_PROVIDER_BY_STAGE = provider_semaphore.SEMAPHORE_PROVIDER_BY_STAGE
+
+
+def _semaphore_limit(stage: Stage) -> int:
+    if stage == Stage.LIPSYNC:
+        # max(1, ...) — защита от TOONTALES_SYNC_MAX_CONCURRENCY=0/отрицательного
+        # (иначе acquire всегда бы отказывал и задача вечно requeue'илась бы
+        # каждые ~несколько секунд — hot-loop; admission-control-ревью).
+        return max(1, get_settings().sync_max_concurrency)
+    return 1
+
+
+def _release_semaphore_if_held(task_stage: Stage, task_id: str) -> None:
+    provider = _SEMAPHORE_PROVIDER_BY_STAGE.get(task_stage)
+    if provider is not None:
+        provider_semaphore.release_slot(provider=provider, holder=task_id)
+
+
+# Задержка requeue при занятом слоте/сбое Redis: базовые ~2с + случайный jitter,
+# чтобы N ожидающих lipsync-задач (и at-least-once дубли) не долбили Redis/Celery
+# синхронным штормом с одинаковым интервалом (admission-control-ревью).
+_SEMAPHORE_RETRY_BASE_SECONDS = 2
+
+
+def _semaphore_retry_delay() -> float:
+    return _SEMAPHORE_RETRY_BASE_SECONDS + random.uniform(0, _SEMAPHORE_RETRY_BASE_SECONDS)
 
 # Классы ошибок, которые считаются transient и подлежат Celery-level retry.
 # httpx.TransportError — общий базовый класс сетевых сбоев httpx (ConnectError,
@@ -230,9 +261,34 @@ def process_task(self: CeleryTask, task_id: str) -> None:
         if task is None or task.status not in (TaskStatus.PENDING, TaskStatus.RETRY_SCHEDULED):
             return  # уже обработан или больше не существует — идемпотентный no-op
 
+        # Admission control ДО перевода в SUBMITTING (иначе занятый слот жёг бы
+        # attempt_no зря): для стадий с лимитом concurrency пытаемся занять слот.
+        # Не вышло — не трогаем статус (остаётся PENDING/RETRY_SCHEDULED, guard
+        # выше пропустит повторный process_task) и откладываем без обращения к API.
+        semaphore_provider = _SEMAPHORE_PROVIDER_BY_STAGE.get(task.stage)
+        if semaphore_provider is not None:
+            try:
+                acquired = provider_semaphore.acquire_slot(
+                    provider=semaphore_provider, holder=task_id, limit=_semaphore_limit(task.stage)
+                )
+            except redis.RedisError:
+                # P0 (admission-control-ревью): RedisError не входит в TRANSIENT_ERRORS,
+                # а acquire вызывается ДО attempt_no++ — необработанное исключение
+                # здесь при task_acks_on_failure_or_timeout=True (Celery default)
+                # заакнуло бы задачу навсегда (reconcile игнорирует attempt_no=0).
+                # Транзиентный сбой Redis — просто requeue без потери задачи.
+                session.rollback()
+                process_task.apply_async(args=[task_id], countdown=_semaphore_retry_delay())
+                return
+            if not acquired:
+                session.rollback()
+                process_task.apply_async(args=[task_id], countdown=_semaphore_retry_delay())
+                return
+
         task.status = TaskStatus.SUBMITTING
         task.attempt_no += 1
         task.celery_task_id = self.request.id
+        task_stage = task.stage  # для release после закрытия сессии (task станет detached)
         session.commit()
 
         try:
@@ -258,6 +314,10 @@ def process_task(self: CeleryTask, task_id: str) -> None:
             # повторить попытку после первого падения).
             task.status = TaskStatus.PENDING
             session.commit()
+            # submit не прошёл — провайдер запрос не принял, ничего активного у него
+            # нет: отпускаем слот (реентрантный acquire при Celery-retry заберёт снова),
+            # чтобы занятый слот не блокировал другие сцены пока ждём backoff.
+            _release_semaphore_if_held(task_stage, task_id)
             raise
         except Exception as exc:
             # Любая иная ошибка (botocore/S3, отсутствующий ffmpeg, повреждённый файл
@@ -270,6 +330,10 @@ def process_task(self: CeleryTask, task_id: str) -> None:
     with SyncSessionLocal() as session:
         if submission.result is not None:
             complete_task(session, task_id=uuid.UUID(task_id), result=submission.result)
+            # submit завершился синхронно (immediate result или ошибка) — задача
+            # completed/failed/retry_scheduled, у провайдера ничего активного нет:
+            # отпускаем слот. При retry_scheduled повторный process_task заберёт заново.
+            _release_semaphore_if_held(task_stage, task_id)
         else:
             task = session.execute(select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()).scalar_one()
             task.status = TaskStatus.WAITING_PROVIDER
@@ -277,6 +341,8 @@ def process_task(self: CeleryTask, task_id: str) -> None:
             task.provider_status = submission.status
             task.next_poll_at = datetime.now(timezone.utc) + timedelta(seconds=_exponential_backoff(0))
             session.commit()
+            # Слот НЕ отпускаем: провайдер принял задачу, генерация идёт — держим
+            # слот через серию poll_task (каждый poll обновляет TTL) до terminal.
             poll_task.apply_async(args=[task_id], countdown=_exponential_backoff(0))
             return
 
@@ -303,6 +369,7 @@ def poll_task(self: CeleryTask, task_id: str) -> None:
         adapter = get_adapter(task.stage)
         provider_job_id = task.provider_job_id
         poll_attempt = task.attempt_no
+        task_stage = task.stage
 
     try:
         result: ProviderJobResult = asyncio.run(adapter.poll(provider_job_id))
@@ -327,6 +394,12 @@ def poll_task(self: CeleryTask, task_id: str) -> None:
 
     if result.status in (ProviderJobStatus.QUEUED, ProviderJobStatus.PROCESSING):
         delay = result.retry_after_seconds or _exponential_backoff(poll_attempt)
+        # Провайдер ещё работает — продлеваем TTL слота, иначе при генерации дольше
+        # SLOT_TTL_SECONDS слот протух бы между poll'ами и впустил вторую задачу
+        # сверх лимита. refresh только продлевает существующий слот (см. _REFRESH_SCRIPT).
+        provider = _SEMAPHORE_PROVIDER_BY_STAGE.get(task_stage)
+        if provider is not None:
+            provider_semaphore.refresh_slot(provider=provider, holder=task_id)
         with SyncSessionLocal() as session:
             task = session.get(Task, uuid.UUID(task_id))
             task.next_poll_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
@@ -336,6 +409,9 @@ def poll_task(self: CeleryTask, task_id: str) -> None:
 
     with SyncSessionLocal() as session:
         complete_task(session, task_id=uuid.UUID(task_id), result=result)
+    # terminal у провайдера (completed/failed/retry) — слот отпускаем. При
+    # retry_scheduled повторный process_task заберёт заново.
+    _release_semaphore_if_held(task_stage, task_id)
 
     _maybe_retry_scheduled(self, task_id)
 

@@ -19,9 +19,13 @@ celery_app.conf.update(
     # Через Celery передаются только UUID/примитивы, не ORM-объекты (review.md §7).
     task_track_started=True,
     # acks_late + reject_on_worker_lost: сообщение не теряется при падении воркера
-    # посреди обработки (review.md §7).
+    # посреди обработки (review.md §7). ВАЖНО: правильное имя настройки —
+    # task_reject_on_worker_lost (task_reject_on_lost, стоявшее здесь раньше,
+    # Celery молча игнорировал как неизвестный ключ, оставляя эффективное
+    # значение None — задача НЕ реджектилась/не переставлялась при потере
+    # воркера; найдено admission-control-ревью).
     task_acks_late=True,
-    task_reject_on_lost=True,
+    task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     task_soft_time_limit=120,
     task_time_limit=180,

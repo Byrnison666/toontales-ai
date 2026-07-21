@@ -43,6 +43,10 @@ class Settings(BaseSettings):
 
     sync_api_key: str = ""
     sync_model: str = "lipsync-2"
+    # Лимит одновременных генераций Sync.so (тариф: hobbyist=1). Admission control
+    # (orchestration/provider_semaphore.py) отсекает lipsync-запросы сверх лимита
+    # ДО обращения к API, вместо ловли 429. При апгрейде тарифа — поднять здесь.
+    sync_max_concurrency: int = 1
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"

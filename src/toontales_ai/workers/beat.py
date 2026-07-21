@@ -11,6 +11,7 @@ from sqlalchemy import select
 from toontales_ai.domain.enums import TaskStatus
 from toontales_ai.domain.models import Task
 from toontales_ai.observability import metrics
+from toontales_ai.orchestration import provider_semaphore
 from toontales_ai.orchestration.outbox_dispatcher import dispatch_once
 from toontales_ai.storage.db import SyncSessionLocal
 from toontales_ai.workers.celery_app import celery_app
@@ -136,12 +137,24 @@ def reconcile_stale_tasks() -> None:
                 Task.created_at < now - MAX_TASK_AGE,
             )
         ).scalars().all()
+        # (task_id, stage) для освобождения provider-семафора ПОСЛЕ commit —
+        # reconcile помечает FAILED в обход complete_task/tasks.py, где обычно
+        # происходит release_slot; без этого слот lipsync-задачи держался бы до
+        # TTL (admission-control-ревью).
+        expired_semaphore_holders: list[tuple[str, "object"]] = []
         for task in expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "exceeded max task age"}
             _release(session, task)
+            if task.stage in provider_semaphore.SEMAPHORE_PROVIDER_BY_STAGE:
+                expired_semaphore_holders.append((str(task.id), task.stage))
         expired_ids = {t.id for t in expired}
         session.commit()
+
+    for holder, stage in expired_semaphore_holders:
+        provider_semaphore.release_slot(
+            provider=provider_semaphore.SEMAPHORE_PROVIDER_BY_STAGE[stage], holder=holder
+        )
 
     stale_to_poll = [task_id for task_id in stale_ids if task_id not in expired_ids]
     for task_id in stale_to_poll:
