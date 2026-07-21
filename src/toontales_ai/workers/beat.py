@@ -24,6 +24,16 @@ STALE_WAITING_PROVIDER_GRACE = timedelta(minutes=10)
 # Общий deadline: если Task не завершился за это время — принудительно failed + release.
 MAX_TASK_AGE = timedelta(hours=2)
 
+# P0, найдено живым e2e-прогоном (Sync.so concurrency_limit=1 → постоянные 429):
+# TRANSIENT_ERRORS-ветка process_task возвращает Task в PENDING и re-raise'ит для
+# Celery-level autoretry_for. Пока autoretry укладывается в свой max_retries — всё
+# штатно. Но когда Celery ИСЧЕРПЫВАЕТ max_retries, он не перепланирует process_task
+# снова, а Task остаётся в PENDING без единого запланированного Celery job — это
+# отличается от "свежесозданного" PENDING (ещё не подхваченного dispatch_outbox)
+# только по attempt_no > 0 (инкрементируется в начале process_task при каждом
+# фактическом запуске). Без этой ветки такой Task зависает навсегда.
+ORPHANED_PENDING_GRACE = timedelta(minutes=5)
+
 
 @celery_app.task(name="toontales_ai.workers.beat.dispatch_outbox")
 def dispatch_outbox() -> int:
@@ -36,23 +46,69 @@ def reconcile_stale_tasks() -> None:
     from toontales_ai.orchestration.pipeline_sync import _release  # переиспользуем существующий helper
     from toontales_ai.workers.tasks import poll_task, process_task
 
-    now = datetime.now(timezone.utc)
+    # aware UTC для читаемости логов/error_payload; для сравнений с БД используется
+    # только "now - timedelta" ВНУТРИ SQL WHERE (см. ниже) — SQL-side датой-арифметика
+    # против TIMESTAMP WITHOUT TIME ZONE колонок стабильна независимо от TimeZone
+    # сессии. Python-side "now - task.created_at" на УЖЕ round-trip'нутом из БД
+    # значении — нет: обнаружено флакующим тестом, конкретное pooled-соединение
+    # может вернуть created_at со сдвигом на TimeZone сессии (Europe/Moscow в этом
+    # окружении) относительно aware/naive UTC `now`, вычисленного в Python. Поэтому
+    # обе "старше MAX_TASK_AGE?" проверки (stuck_submitting и orphaned_pending)
+    # переписаны как отдельные SQL-запросы вместо Python-side вычитания.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     with SyncSessionLocal() as session:
-        stuck_submitting = session.execute(
-            select(Task).where(Task.status == TaskStatus.SUBMITTING, Task.created_at < now - STUCK_SUBMITTING_TIMEOUT)
+        stuck_submitting_recoverable = session.execute(
+            select(Task.id).where(
+                Task.status == TaskStatus.SUBMITTING,
+                Task.created_at < now - STUCK_SUBMITTING_TIMEOUT,
+                Task.created_at >= now - MAX_TASK_AGE,
+            )
         ).scalars().all()
-        for task in stuck_submitting:
-            if now - task.created_at > MAX_TASK_AGE:
-                task.status = TaskStatus.FAILED
-                task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "stuck in SUBMITTING past max task age"}
-                _release(session, task)
-            else:
-                task.status = TaskStatus.PENDING
+        stuck_submitting_expired = session.execute(
+            select(Task).where(
+                Task.status == TaskStatus.SUBMITTING,
+                Task.created_at < now - STUCK_SUBMITTING_TIMEOUT,
+                Task.created_at < now - MAX_TASK_AGE,
+            )
+        ).scalars().all()
+        for task in stuck_submitting_expired:
+            task.status = TaskStatus.FAILED
+            task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "stuck in SUBMITTING past max task age"}
+            _release(session, task)
+        for task_id in stuck_submitting_recoverable:
+            session.get(Task, task_id).status = TaskStatus.PENDING
         session.commit()
-        to_resubmit = [t.id for t in stuck_submitting if t.status == TaskStatus.PENDING]
+        to_resubmit = list(stuck_submitting_recoverable)
 
     for task_id in to_resubmit:
+        process_task.apply_async(args=[str(task_id)])
+
+    with SyncSessionLocal() as session:
+        orphaned_pending_recoverable = session.execute(
+            select(Task.id).where(
+                Task.status == TaskStatus.PENDING,
+                Task.attempt_no > 0,
+                Task.created_at < now - ORPHANED_PENDING_GRACE,
+                Task.created_at >= now - MAX_TASK_AGE,
+            )
+        ).scalars().all()
+        orphaned_pending_expired = session.execute(
+            select(Task).where(
+                Task.status == TaskStatus.PENDING,
+                Task.attempt_no > 0,
+                Task.created_at < now - ORPHANED_PENDING_GRACE,
+                Task.created_at < now - MAX_TASK_AGE,
+            )
+        ).scalars().all()
+        for task in orphaned_pending_expired:
+            task.status = TaskStatus.FAILED
+            task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "orphaned in PENDING past max task age"}
+            _release(session, task)
+        session.commit()
+        orphaned_ids = list(orphaned_pending_recoverable)
+
+    for task_id in orphaned_ids:
         process_task.apply_async(args=[str(task_id)])
 
     with SyncSessionLocal() as session:
