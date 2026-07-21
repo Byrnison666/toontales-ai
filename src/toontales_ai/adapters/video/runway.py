@@ -194,7 +194,7 @@ class RunwayAdapter:
             tmp_path = Path(tmp_file.name)
             total = 0
             try:
-                async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+                async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
                     async with client.stream("GET", url) as response:
                         if response.status_code == 429 or response.status_code >= 500:
                             raise RunwayTransientError(f"failed to download Runway output: {response.status_code}")

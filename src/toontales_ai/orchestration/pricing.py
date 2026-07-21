@@ -10,7 +10,7 @@ STAGE_COST: dict[Stage, int] = {
     Stage.IMAGE: 30,
     Stage.VIDEO: 200,
     Stage.AUDIO: 20,
-    Stage.LIPSYNC: 0,  # pass-through заглушка в MVP (v2.md stage 5)
+    Stage.LIPSYNC: 20,  # real Sync.so API call — то же порядок цены, что AUDIO (ElevenLabs)
     Stage.COMPOSITION: 10,
 }
 

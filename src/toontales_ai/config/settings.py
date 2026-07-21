@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     runway_api_key: str = ""
 
+    sync_api_key: str = ""
+    sync_model: str = "lipsync-2"
+
 
 @lru_cache
 def get_settings() -> Settings:

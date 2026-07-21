@@ -2,14 +2,14 @@ from functools import lru_cache
 
 from toontales_ai.adapters.audio.elevenlabs import ElevenLabsAdapter
 from toontales_ai.adapters.base import ProviderAdapter
-from toontales_ai.adapters.stubs import ImmediateMediaStubAdapter, LipsyncPassthroughAdapter, StoryboardStubAdapter
+from toontales_ai.adapters.image.runway import RunwayImageAdapter
+from toontales_ai.adapters.lipsync.sync_so import SyncAdapter
+from toontales_ai.adapters.stubs import StoryboardStubAdapter
 from toontales_ai.adapters.video.runway import RunwayAdapter
 from toontales_ai.domain.enums import Stage
 
 _STATIC_ADAPTERS: dict[Stage, ProviderAdapter] = {
     Stage.STORYBOARD: StoryboardStubAdapter(),
-    Stage.IMAGE: ImmediateMediaStubAdapter(content_type="image/png"),
-    Stage.LIPSYNC: LipsyncPassthroughAdapter(),
 }
 
 # Стадии с реальными vendor-адаптерами, требующими конфигурацию (api key и т.п.):
@@ -28,9 +28,23 @@ def _video_adapter() -> ProviderAdapter:
     return RunwayAdapter()
 
 
+@lru_cache
+def _image_adapter() -> ProviderAdapter:
+    return RunwayImageAdapter()
+
+
+@lru_cache
+def _lipsync_adapter() -> ProviderAdapter:
+    return SyncAdapter()
+
+
 def get_adapter(stage: Stage) -> ProviderAdapter:
     if stage == Stage.AUDIO:
         return _audio_adapter()
     if stage == Stage.VIDEO:
         return _video_adapter()
+    if stage == Stage.IMAGE:
+        return _image_adapter()
+    if stage == Stage.LIPSYNC:
+        return _lipsync_adapter()
     return _STATIC_ADAPTERS[stage]

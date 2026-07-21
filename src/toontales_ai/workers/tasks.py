@@ -16,6 +16,8 @@ from celery import Task as CeleryTask
 from sqlalchemy import select
 
 from toontales_ai.adapters.base import ProviderJobResult, ProviderSubmission, StageInput
+from toontales_ai.adapters.image.runway import RunwayImageTransientError
+from toontales_ai.adapters.lipsync.sync_so import SyncTransientError
 from toontales_ai.adapters.registry import get_adapter
 from toontales_ai.adapters.video.runway import RunwayTransientError
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
@@ -30,10 +32,17 @@ from toontales_ai.workers.celery_app import celery_app
 # httpx.TransportError — общий базовый класс сетевых сбоев httpx (ConnectError,
 # {Connect,Read,Write,Pool}Timeout и т.п.) при вызове реальных vendor-адаптеров
 # (напр. ElevenLabsAdapter) — не подклассы builtin ConnectionError/TimeoutError.
-# RunwayTransientError — 429/5xx от Runway (перегрузка/сбой сервиса, а не
-# ошибка запроса) — не должны сжигать domain-level retry_count наравне с
-# permanent-ошибками (invalid input и т.п.).
-TRANSIENT_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError, RunwayTransientError)
+# RunwayTransientError/RunwayImageTransientError/SyncTransientError — 429/5xx от
+# Runway/Sync.so (перегрузка/сбой сервиса, а не ошибка запроса) — не должны сжигать
+# domain-level retry_count наравне с permanent-ошибками (invalid input и т.п.).
+TRANSIENT_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    httpx.TransportError,
+    RunwayTransientError,
+    RunwayImageTransientError,
+    SyncTransientError,
+)
 
 MAX_POLL_BACKOFF_SECONDS = 60
 
@@ -169,6 +178,28 @@ def _build_stage_input(session, task: Task) -> StageInput:
                     )
                 if image_assets:
                     payload["source_image_url"] = presigned_get_url(image_assets[0].storage_key)
+            elif task.stage == Stage.LIPSYNC:
+                # LIPSYNC — join-стадия (STAGE_PREDECESSORS: требует VIDEO и AUDIO).
+                # Реальному адаптеру (SyncAdapter) нужны HTTPS URL уже готовых
+                # видео- и аудио-артефактов сцены, а не текстовые поля сцены.
+                for stage, kind, field_name in (
+                    (Stage.VIDEO, MediaKind.VIDEO, "source_video_url"),
+                    (Stage.AUDIO, MediaKind.AUDIO, "source_audio_url"),
+                ):
+                    assets = session.execute(
+                        select(MediaAsset)
+                        .join(Task, Task.id == MediaAsset.task_id)
+                        .where(MediaAsset.scene_id == scene.id, MediaAsset.kind == kind, Task.stage == stage)
+                    ).scalars().all()
+                    if len(assets) > 1:
+                        # Тот же fail-fast, что и для IMAGE выше (review.md §10 P2):
+                        # неоднозначный выбор артефакта не должен решаться молча.
+                        raise ValueError(
+                            f"ambiguous {kind.value} asset for scene {scene.id}: "
+                            f"{len(assets)} candidates, expected exactly one"
+                        )
+                    if assets:
+                        payload[field_name] = presigned_get_url(assets[0].storage_key)
     return StageInput(task_id=str(task.id), scene_id=str(task.scene_id) if task.scene_id else None, payload=payload)
 
 
