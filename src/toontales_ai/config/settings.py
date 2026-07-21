@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TOONTALES_", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://toontales:toontales@localhost:5432/toontales"
+    test_database_url: str = "postgresql+psycopg://toontales:toontales@localhost:5432/toontales_test"
     redis_url: str = "redis://localhost:6379/0"
 
     s3_endpoint_url: str | None = None
