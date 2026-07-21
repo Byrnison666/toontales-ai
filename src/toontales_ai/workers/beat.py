@@ -2,6 +2,7 @@
 (review.md §10, пробел 'нет общего deadline/max polling age и reconciliation
 waiting_provider после рестарта worker')."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,9 +10,12 @@ from sqlalchemy import select
 
 from toontales_ai.domain.enums import TaskStatus
 from toontales_ai.domain.models import Task
+from toontales_ai.observability import metrics
 from toontales_ai.orchestration.outbox_dispatcher import dispatch_once
 from toontales_ai.storage.db import SyncSessionLocal
 from toontales_ai.workers.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 # Если Task завис в SUBMITTING дольше этого — process_task, скорее всего,
 # упал после commit(SUBMITTING) до реального submit(); безопасно вернуть в PENDING.
@@ -83,6 +87,9 @@ def reconcile_stale_tasks() -> None:
 
     for task_id in to_resubmit:
         process_task.apply_async(args=[str(task_id)])
+    if to_resubmit:
+        logger.warning("stuck submitting tasks recovered", extra={"count": len(to_resubmit)})
+        metrics.RECONCILED_TASKS_TOTAL.labels(reconciliation_type="stuck_submitting").inc(len(to_resubmit))
 
     with SyncSessionLocal() as session:
         orphaned_pending_recoverable = session.execute(
@@ -110,6 +117,9 @@ def reconcile_stale_tasks() -> None:
 
     for task_id in orphaned_ids:
         process_task.apply_async(args=[str(task_id)])
+    if orphaned_ids:
+        logger.warning("orphaned pending tasks recovered", extra={"count": len(orphaned_ids)})
+        metrics.RECONCILED_TASKS_TOTAL.labels(reconciliation_type="orphaned_pending").inc(len(orphaned_ids))
 
     with SyncSessionLocal() as session:
         stale_waiting = session.execute(
@@ -133,6 +143,11 @@ def reconcile_stale_tasks() -> None:
         expired_ids = {t.id for t in expired}
         session.commit()
 
-    for task_id in stale_ids:
-        if task_id not in expired_ids:
-            poll_task.apply_async(args=[str(task_id)])
+    stale_to_poll = [task_id for task_id in stale_ids if task_id not in expired_ids]
+    for task_id in stale_to_poll:
+        poll_task.apply_async(args=[str(task_id)])
+    if stale_to_poll:
+        logger.info("stale waiting provider tasks recovered", extra={"count": len(stale_to_poll)})
+    if expired:
+        logger.warning("expired tasks failed", extra={"count": len(expired)})
+        metrics.RECONCILED_TASKS_TOTAL.labels(reconciliation_type="expired").inc(len(expired))

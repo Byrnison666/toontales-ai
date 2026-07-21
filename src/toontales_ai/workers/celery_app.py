@@ -1,6 +1,10 @@
 from celery import Celery
+from celery.signals import beat_init, task_postrun, task_prerun, worker_ready
 
 from toontales_ai.config.settings import get_settings
+from toontales_ai.observability.logging_config import configure_logging, set_request_id
+
+configure_logging()
 
 _settings = get_settings()
 
@@ -22,6 +26,13 @@ celery_app.conf.update(
     task_soft_time_limit=120,
     task_time_limit=180,
     task_default_retry_delay=10,
+    # По умолчанию Celery при старте worker-процесса захватывает root logger и
+    # переопределяет его handlers своими (P0, найдено security/observability-
+    # ревью: наш configure_logging() выше вызывается на импорте модуля, но
+    # worker_hijack_root_logger=True стирает это при фактическом запуске `celery
+    # worker` — все domain-логи из pipeline_sync.py/beat.py уходили бы НЕ в JSON
+    # и без request_id/task_id корреляции).
+    worker_hijack_root_logger=False,
 )
 
 celery_app.conf.beat_schedule = {
@@ -42,3 +53,32 @@ celery_app.conf.beat_schedule = {
 # поставленная в PipelineOutbox через API, никогда не попадала бы в Celery).
 celery_app.conf.imports = ("toontales_ai.workers.tasks", "toontales_ai.workers.beat")
 celery_app.autodiscover_tasks(["toontales_ai.workers"])
+
+
+@task_prerun.connect
+def _set_task_request_id(*, task_id: str | None = None, **_: object) -> None:
+    set_request_id(str(task_id) if task_id is not None else None)
+
+
+@task_postrun.connect
+def _clear_task_request_id(**_: object) -> None:
+    set_request_id(None)
+
+
+def _start_metrics_server(**_: object) -> None:
+    # Отдельный HTTP-сервер только для Prometheus scrape этого процесса
+    # (worker/beat) — их prometheus_client.REGISTRY физически не тот же объект,
+    # что у FastAPI-процесса с эндпоинтом /metrics на основном порту 8000
+    # (security/observability-ревью: без этого TASK_TRANSITIONS_TOTAL и
+    # RECONCILED_TASKS_TOTAL, инкрементируемые в pipeline_sync.py/beat.py,
+    # никогда не попадали бы в Prometheus). Импорт внутри функции — на момент
+    # импорта модуля celery_app.py (в т.ч. FastAPI-процессом через ленивый
+    # локальный импорт в orchestration/outbox_dispatcher.py) сигнал ещё не
+    # сработал, порт не занимается, если это не настоящий worker/beat процесс.
+    from prometheus_client import start_http_server
+
+    start_http_server(get_settings().metrics_port)
+
+
+worker_ready.connect(_start_metrics_server)
+beat_init.connect(_start_metrics_server)

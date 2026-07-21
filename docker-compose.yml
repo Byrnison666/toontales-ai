@@ -54,6 +54,12 @@ services:
   worker:
     <<: *app
     command: ["celery", "-A", "toontales_ai.workers.celery_app", "worker", "--loglevel=info"]
+    # TOONTALES_METRICS_PORT (settings.py) — worker/beat не имеют своего /metrics
+    # эндпоинта как api (отдельный процесс, отдельный prometheus_client REGISTRY
+    # в памяти) — вместо этого celery_app.py поднимает мини HTTP-сервер только
+    # для Prometheus scrape (см. worker_ready/beat_init сигналы).
+    ports:
+      - "9101:9100"
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,6 +71,8 @@ services:
   beat:
     <<: *app
     command: ["celery", "-A", "toontales_ai.workers.celery_app", "beat", "--loglevel=info"]
+    ports:
+      - "9102:9100"
     depends_on:
       postgres:
         condition: service_healthy

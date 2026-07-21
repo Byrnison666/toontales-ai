@@ -2,6 +2,7 @@
 Единая точка входа и для poll, и для webhook (review.md §2): оба вызывают
 complete_task() под SELECT...FOR UPDATE, что сериализует гонку между ними."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -31,7 +32,10 @@ from toontales_ai.domain.models import (
     Task,
     User,
 )
+from toontales_ai.observability import metrics
 from toontales_ai.orchestration import real_cost
+
+logger = logging.getLogger(__name__)
 
 # Стадия -> тип артефакта в MediaAsset. STORYBOARD не отображается — его
 # результат структурные данные (scenes JSON), а не файл в object storage.
@@ -169,6 +173,15 @@ def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID
         if run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
             run.status = RunStatus.FAILED
             run.finished_at = datetime.now(timezone.utc)
+        logger.error(
+            "insufficient credits, task failed",
+            extra={
+                "task_id": str(task_id),
+                "run_id": str(run_id),
+                "required": cost,
+                "balance": user.credit_balance,
+            },
+        )
         return
 
     inserted_id = session.execute(
@@ -336,6 +349,16 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
                 error_detail="provider reported success but returned no scenes",
             )
 
+    # Наблюдаемые события (лог + метрики) собираем в outcome, но эмитим ТОЛЬКО
+    # ПОСЛЕ session.commit() (security/observability-ревью: между inc()/логом и
+    # commit идут _charge/_materialize/_advance с SQL — исключение/rollback там
+    # оставил бы фантомный completed/failed/cost в Prometheus и логах без
+    # реального перехода в БД). None-поля означают "события нет".
+    outcome_stage: str | None = None
+    outcome_status: str | None = None
+    outcome_real_cost: float | None = None
+    outcome_error_code: str | None = None
+
     if succeeded:
         task.status = TaskStatus.COMPLETED
         task.output_snapshot = {"artifacts": list(result.artifacts)}
@@ -343,6 +366,9 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         task.provider_job_id = result.provider_job_id
         task.provider_status = result.status
         task.real_cost_usd = real_cost.compute_real_cost_usd(task.stage, result.usage)
+        outcome_stage, outcome_status = task.stage.value, "completed"
+        if task.real_cost_usd is not None:
+            outcome_real_cost = float(task.real_cost_usd)
         # Успех после N неудачных попыток не должен оставлять error_payload от
         # предыдущего провала висеть в снапшоте задачи (замечено при e2e-прогоне:
         # COMPOSITION показывал status=completed вместе со старой ошибкой retry).
@@ -372,6 +398,8 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
             task.error_payload = {"code": result.error_code, "detail": result.error_detail}
             task.finished_at = datetime.now(timezone.utc)
             _release(session, task)
+            outcome_stage, outcome_status = task.stage.value, "failed"
+            outcome_error_code = str(result.error_code) if result.error_code else None
             # Та же находка, зеркально: перманентный провал любой стадии должен
             # пометить весь run как FAILED, а не оставлять его в RUNNING навечно —
             # иначе у пользователя нет сигнала, что нужен partial rerun.
@@ -383,12 +411,37 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
             task.retry_count += 1
             task.status = TaskStatus.RETRY_SCHEDULED
             task.error_payload = {"code": result.error_code, "detail": result.error_detail}
+            outcome_stage, outcome_status = task.stage.value, "retry_scheduled"
 
     project_id = session.execute(
         select(Project.id).join(GenerationRun, GenerationRun.project_id == Project.id).where(GenerationRun.id == task.run_id)
     ).scalar_one()
     stage_status, task_status_value, error_payload = task.stage, task.status, task.error_payload
+    task_id_str, run_id_str, retry_count = str(task.id), str(task.run_id), task.retry_count
     session.commit()
+
+    # После commit — эмит наблюдаемых событий (см. комментарий выше).
+    if outcome_status == "completed":
+        logger.info("task completed", extra={"task_id": task_id_str, "stage": outcome_stage, "run_id": run_id_str})
+        metrics.TASK_TRANSITIONS_TOTAL.labels(stage=outcome_stage, status="completed").inc()
+        if outcome_real_cost is not None:
+            metrics.TASK_REAL_COST_USD_TOTAL.labels(stage=outcome_stage).inc(outcome_real_cost)
+    elif outcome_status == "failed":
+        logger.warning(
+            "task permanently failed",
+            extra={"task_id": task_id_str, "stage": outcome_stage, "error_code": outcome_error_code},
+        )
+        metrics.TASK_TRANSITIONS_TOTAL.labels(stage=outcome_stage, status="failed").inc()
+        if outcome_error_code:
+            metrics.PROVIDER_ERRORS_TOTAL.labels(
+                stage=outcome_stage,
+                error_code=metrics.normalize_error_code(outcome_error_code),
+            ).inc()
+    elif outcome_status == "retry_scheduled":
+        logger.info(
+            "task retry scheduled",
+            extra={"task_id": task_id_str, "stage": outcome_stage, "retry_count": retry_count},
+        )
 
     _publish_task_event(
         run_id=task.run_id,

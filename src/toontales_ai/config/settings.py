@@ -20,6 +20,12 @@ class Settings(BaseSettings):
 
     ws_ticket_ttl_seconds: int = 60
 
+    # Celery worker/beat — отдельные процессы от FastAPI (api имеет свой /metrics
+    # на основном порту); каждый в своём контейнере поднимает мини HTTP-сервер
+    # только для Prometheus scrape (prometheus_client.REGISTRY процесса не виден
+    # снаружи иначе — найдено security/observability-ревью).
+    metrics_port: int = 9100
+
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_access_token_expires_minutes: int = 24 * 60
