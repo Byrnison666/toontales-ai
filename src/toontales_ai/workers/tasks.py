@@ -19,6 +19,7 @@ from toontales_ai.adapters.base import ProviderJobResult, ProviderSubmission, St
 from toontales_ai.adapters.image.runway import RunwayImageTransientError
 from toontales_ai.adapters.lipsync.sync_so import SyncTransientError
 from toontales_ai.adapters.registry import get_adapter
+from toontales_ai.adapters.storyboard.anthropic import AnthropicTransientError
 from toontales_ai.adapters.video.runway import RunwayTransientError
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import MediaAsset, Scene, Task
@@ -32,9 +33,9 @@ from toontales_ai.workers.celery_app import celery_app
 # httpx.TransportError — общий базовый класс сетевых сбоев httpx (ConnectError,
 # {Connect,Read,Write,Pool}Timeout и т.п.) при вызове реальных vendor-адаптеров
 # (напр. ElevenLabsAdapter) — не подклассы builtin ConnectionError/TimeoutError.
-# RunwayTransientError/RunwayImageTransientError/SyncTransientError — 429/5xx от
-# Runway/Sync.so (перегрузка/сбой сервиса, а не ошибка запроса) — не должны сжигать
-# domain-level retry_count наравне с permanent-ошибками (invalid input и т.п.).
+# RunwayTransientError/RunwayImageTransientError/SyncTransientError/AnthropicTransientError —
+# 429/5xx от Runway/Sync.so/Anthropic (перегрузка/сбой сервиса, а не ошибка запроса) —
+# не должны сжигать domain-level retry_count наравне с permanent-ошибками (invalid input и т.п.).
 TRANSIENT_ERRORS = (
     ConnectionError,
     TimeoutError,
@@ -42,6 +43,7 @@ TRANSIENT_ERRORS = (
     RunwayTransientError,
     RunwayImageTransientError,
     SyncTransientError,
+    AnthropicTransientError,
 )
 
 MAX_POLL_BACKOFF_SECONDS = 60

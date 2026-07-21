@@ -17,8 +17,13 @@ from pathlib import Path
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920  # 9:16
 
-DEFAULT_TIMEOUT_SECONDS = 120
-MAX_CPU_SECONDS = 100
+# Живой e2e-прогон с реальным STORYBOARD-адаптером (5 сцен, v2.md ориентир
+# "до 5-6 сцен") вскрыл: прежние 120с/100с CPU были откалиброваны под 2-сценовый
+# stub и x264-кодирование 5 клипов упиралось в MAX_CPU_SECONDS ещё до завершения
+# concat — subprocess получал SIGKILL (soft==hard limit, grace-периода нет).
+# Подняты пропорционально MAX_ASSUMED_SCENES=6 (pipeline_async.py).
+DEFAULT_TIMEOUT_SECONDS = 400
+MAX_CPU_SECONDS = 500
 MAX_OUTPUT_FILE_BYTES = 500 * 1024 * 1024  # 500 MiB — защита от decompression bomb на выходе
 
 

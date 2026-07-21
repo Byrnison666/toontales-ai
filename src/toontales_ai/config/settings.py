@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     sync_api_key: str = ""
     sync_model: str = "lipsync-2"
 
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+
 
 @lru_cache
 def get_settings() -> Settings:
