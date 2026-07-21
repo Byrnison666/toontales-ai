@@ -61,6 +61,9 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     email: Mapped[str] = mapped_column(unique=True, index=True)
+    # nullable: существующие MVP-пользователи (созданы напрямую в БД до появления
+    # auth) не имеют пароля и не могут логиниться — не ретроактивная миграция.
+    password_hash: Mapped[str | None] = mapped_column(nullable=True)
     # Integer, минимальные единицы (центы кредита), не float — review.md §4.
     credit_balance: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     ws_ticket_ttl_seconds: int = 60
 
     jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expires_minutes: int = 24 * 60
 
     # fail-closed по умолчанию (review.md §10) — недоступность модератора блокирует контент.
     moderation_fail_open: bool = False
