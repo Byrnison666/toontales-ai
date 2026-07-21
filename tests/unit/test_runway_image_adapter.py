@@ -217,6 +217,7 @@ async def test_poll_succeeded_downloads_and_uploads_output(monkeypatch):
     assert result.status == ProviderJobStatus.SUCCEEDED
     assert result.artifacts[0]["storage_key"] == "runway-image/task_123.png"
     assert result.artifacts[0]["size_bytes"] == len(b"fake-png-bytes")
+    assert result.usage == {"images": 1}
     assert uploaded["data"] == b"fake-png-bytes"
     assert uploaded["content_type"] == "image/png"
 

@@ -30,6 +30,7 @@ class ProviderJobResult:
     error_code: str | None = None
     error_detail: str | None = None
     retry_after_seconds: int | None = None
+    usage: dict[str, Any] | None = None
 
 
 @runtime_checkable

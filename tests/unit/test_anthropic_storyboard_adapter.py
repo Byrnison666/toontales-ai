@@ -61,7 +61,10 @@ class _FakeAsyncClient:
 
 
 def _messages_response(scenes: list[dict]) -> dict:
-    return {"content": [{"type": "text", "text": json.dumps({"scenes": scenes})}]}
+    return {
+        "content": [{"type": "text", "text": json.dumps({"scenes": scenes})}],
+        "usage": {"input_tokens": 120, "output_tokens": 340},
+    }
 
 
 def _sample_scene() -> dict:
@@ -95,6 +98,7 @@ async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
     assert submission.status == ProviderJobStatus.SUCCEEDED
     assert submission.result is not None
     assert submission.result.artifacts[0]["scenes"] == scenes
+    assert submission.result.usage == {"input_tokens": 120, "output_tokens": 340}
 
     body = _FakeAsyncClient.last_post_call["json"]
     assert body["model"] == "claude-haiku-4-5-20251001"
@@ -146,7 +150,11 @@ async def test_submit_raises_plain_api_error_for_4xx(monkeypatch):
 async def test_submit_rejects_response_without_scenes(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     _FakeAsyncClient.post_response = _FakeResponse(
-        200, json_data={"content": [{"type": "text", "text": json.dumps({"scenes": []})}]}
+        200,
+        json_data={
+            "content": [{"type": "text", "text": json.dumps({"scenes": []})}],
+            "usage": {"input_tokens": 120, "output_tokens": 10},
+        },
     )
 
     adapter = AnthropicStoryboardAdapter()
@@ -173,7 +181,11 @@ async def test_submit_rejects_too_many_scenes(monkeypatch):
 async def test_submit_rejects_invalid_json_text(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     _FakeAsyncClient.post_response = _FakeResponse(
-        200, json_data={"content": [{"type": "text", "text": "not json"}]}
+        200,
+        json_data={
+            "content": [{"type": "text", "text": "not json"}],
+            "usage": {"input_tokens": 120, "output_tokens": 10},
+        },
     )
 
     adapter = AnthropicStoryboardAdapter()

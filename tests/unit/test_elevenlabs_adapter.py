@@ -85,6 +85,7 @@ async def test_submit_uploads_audio_and_returns_succeeded(monkeypatch):
 
     assert submission.result is not None
     assert submission.result.artifacts[0]["storage_key"] == "elevenlabs/run1:audio_generation:scene1:v1.mp3"
+    assert submission.result.usage == {"characters": len("hello world")}
     assert uploaded["data"] == b"fake-mp3-bytes"
     assert uploaded["content_type"] == "audio/mpeg"
     assert _FakeAsyncClient.last_call["headers"]["xi-api-key"] == "key-1"

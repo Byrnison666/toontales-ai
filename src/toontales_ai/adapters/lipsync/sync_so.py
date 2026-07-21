@@ -11,7 +11,8 @@
     -> {"id": ..., "status": "PENDING", ...}
 
     GET https://api.sync.so/v2/generate/{id}
-    -> {"id": ..., "status": PENDING|PROCESSING|COMPLETED|FAILED|REJECTED, "outputUrl": ...}
+    -> {"id": ..., "status": PENDING|PROCESSING|COMPLETED|FAILED|REJECTED,
+        "outputUrl": ..., "outputDuration": ...}
 
 Join-стадия: вход — уже готовые VIDEO (Runway) и AUDIO (ElevenLabs) артефакты сцены
 (см. workers/tasks._build_stage_input), а не текстовый промпт."""
@@ -142,6 +143,7 @@ class SyncAdapter:
                 artifacts=(
                     {"storage_key": storage_key, "content_type": "video/mp4", "size_bytes": size_bytes},
                 ),
+                usage={"duration_seconds": data.get("outputDuration")},
             )
 
         # Неизвестный статус — консервативно считаем "ещё выполняется", а не падаем:

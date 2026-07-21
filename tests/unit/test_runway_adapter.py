@@ -237,6 +237,7 @@ async def test_poll_succeeded_downloads_and_uploads_output(monkeypatch):
     assert result.status == ProviderJobStatus.SUCCEEDED
     assert result.artifacts[0]["storage_key"] == "runway/task_123.mp4"
     assert result.artifacts[0]["size_bytes"] == len(b"fake-mp4-bytes")
+    assert result.usage == {"duration_seconds": runway_module.DEFAULT_DURATION_SECONDS}
     assert uploaded["data"] == b"fake-mp4-bytes"
     assert uploaded["content_type"] == "video/mp4"
 

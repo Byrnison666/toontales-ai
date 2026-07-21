@@ -24,6 +24,7 @@ class TaskSnapshot(BaseModel):
     status: str
     progress_hint: str
     cost: int
+    real_cost_usd: str | None
     error: dict | None
 
 
@@ -49,6 +50,7 @@ class RunSnapshotResponse(BaseModel):
     status: str
     trigger: str
     created_at: datetime
+    total_real_cost_usd: str | None
     scenes: list[SceneSnapshot]
     tasks: list[TaskSnapshot]
     assets: list[MediaAssetSnapshot]

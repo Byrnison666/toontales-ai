@@ -177,6 +177,7 @@ class RunwayAdapter:
                 artifacts=(
                     {"storage_key": storage_key, "content_type": "video/mp4", "size_bytes": size_bytes},
                 ),
+                usage={"duration_seconds": DEFAULT_DURATION_SECONDS},
             )
 
         # Неизвестный статус — консервативно считаем "ещё выполняется", а не падаем:

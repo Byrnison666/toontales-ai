@@ -154,6 +154,10 @@ class AnthropicStoryboardAdapter:
             provider_job_id=None,
             status=ProviderJobStatus.SUCCEEDED,
             artifacts=({"scenes": scenes},),
+            usage={
+                "input_tokens": data["usage"]["input_tokens"],
+                "output_tokens": data["usage"]["output_tokens"],
+            },
         )
         return ProviderSubmission(provider_job_id=None, status=ProviderJobStatus.SUCCEEDED, result=result)
 

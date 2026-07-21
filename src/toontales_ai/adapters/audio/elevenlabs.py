@@ -83,6 +83,7 @@ class ElevenLabsAdapter:
                     "size_bytes": len(audio_bytes),
                 },
             ),
+            usage={"characters": len(text)},
         )
         return ProviderSubmission(provider_job_id=None, status=ProviderJobStatus.SUCCEEDED, result=result)
 

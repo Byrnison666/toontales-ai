@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -86,6 +87,8 @@ async def get_run_snapshot(
     scenes = (await session.execute(select(Scene).where(Scene.generation_run_id == run_id).order_by(Scene.scene_index))).scalars().all()
     tasks = (await session.execute(select(Task).where(Task.run_id == run_id))).scalars().all()
     assets = (await session.execute(select(MediaAsset).where(MediaAsset.run_id == run_id))).scalars().all()
+    known_real_costs = [task.real_cost_usd for task in tasks if task.real_cost_usd is not None]
+    total_real_cost_usd = sum(known_real_costs, Decimal("0")) if known_real_costs else None
 
     return RunSnapshotResponse(
         run_id=run.id,
@@ -93,6 +96,7 @@ async def get_run_snapshot(
         status=run.status.value,
         trigger=run.trigger.value,
         created_at=run.created_at,
+        total_real_cost_usd=str(total_real_cost_usd) if total_real_cost_usd is not None else None,
         scenes=[SceneSnapshot(scene_id=s.id, scene_index=s.scene_index, script_text=s.script_text) for s in scenes],
         tasks=[
             TaskSnapshot(
@@ -102,6 +106,7 @@ async def get_run_snapshot(
                 status=t.status.value,
                 progress_hint=t.status.value,
                 cost=t.cost,
+                real_cost_usd=str(t.real_cost_usd) if t.real_cost_usd is not None else None,
                 error=t.error_payload,
             )
             for t in tasks

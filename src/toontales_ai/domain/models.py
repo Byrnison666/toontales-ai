@@ -1,11 +1,13 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     CheckConstraint,
     Enum,
     ForeignKey,
     Index,
+    Numeric,
     UniqueConstraint,
     func,
 )
@@ -205,6 +207,7 @@ class Task(Base):
     next_poll_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     cost: Mapped[int] = mapped_column(default=0)
+    real_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     # Стабильный ключ логической операции: hash(run_id + stage + scene_id + input_version).
     # attempt в ключ не входит (review.md §1).
     idempotency_key: Mapped[str] = mapped_column(unique=True, index=True)

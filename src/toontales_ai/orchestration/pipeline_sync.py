@@ -31,6 +31,7 @@ from toontales_ai.domain.models import (
     Task,
     User,
 )
+from toontales_ai.orchestration import real_cost
 
 # Стадия -> тип артефакта в MediaAsset. STORYBOARD не отображается — его
 # результат структурные данные (scenes JSON), а не файл в object storage.
@@ -322,6 +323,7 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         task.finished_at = datetime.now(timezone.utc)
         task.provider_job_id = result.provider_job_id
         task.provider_status = result.status
+        task.real_cost_usd = real_cost.compute_real_cost_usd(task.stage, result.usage)
         # Успех после N неудачных попыток не должен оставлять error_payload от
         # предыдущего провала висеть в снапшоте задачи (замечено при e2e-прогоне:
         # COMPOSITION показывал status=completed вместе со старой ошибкой retry).

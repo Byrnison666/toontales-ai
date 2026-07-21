@@ -217,7 +217,13 @@ async def test_poll_maps_failed_with_error_reason(monkeypatch):
 async def test_poll_completed_downloads_and_uploads_output(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     _FakeAsyncClient.get_response = _FakeResponse(
-        200, json_data={"id": "gen_123", "status": "COMPLETED", "outputUrl": "https://cdn.sync.so/out.mp4"}
+        200,
+        json_data={
+            "id": "gen_123",
+            "status": "COMPLETED",
+            "outputUrl": "https://cdn.sync.so/out.mp4",
+            "outputDuration": 5.25,
+        },
     )
     _FakeAsyncClient.stream_response = _FakeStreamResponse(200, chunks=[b"fake", b"-mp4-", b"bytes"])
 
@@ -236,6 +242,7 @@ async def test_poll_completed_downloads_and_uploads_output(monkeypatch):
     assert result.status == ProviderJobStatus.SUCCEEDED
     assert result.artifacts[0]["storage_key"] == "sync/gen_123.mp4"
     assert result.artifacts[0]["size_bytes"] == len(b"fake-mp4-bytes")
+    assert result.usage == {"duration_seconds": 5.25}
     assert uploaded["data"] == b"fake-mp4-bytes"
     assert uploaded["content_type"] == "video/mp4"
 

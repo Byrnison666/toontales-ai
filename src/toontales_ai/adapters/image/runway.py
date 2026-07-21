@@ -155,6 +155,7 @@ class RunwayImageAdapter:
                 artifacts=(
                     {"storage_key": storage_key, "content_type": "image/png", "size_bytes": size_bytes},
                 ),
+                usage={"images": 1},
             )
 
         return ProviderJobResult(provider_job_id=provider_job_id, status=ProviderJobStatus.PROCESSING)
