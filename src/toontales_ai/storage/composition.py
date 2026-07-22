@@ -17,6 +17,14 @@ from pathlib import Path
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920  # 9:16
 
+# Брендинг ToonTales в правом верхнем углу. Помимо айдентики он перекрывает
+# вотермарк lipsync-провайдера (Sync.so на hobbyist-тарифе вшивает "sync.so" в
+# кадры), который иначе остаётся в готовом ролике. Статичный PNG накладывается
+# overlay-фильтром — без шрифтов/текста в рантайме (надёжно в slim-контейнере).
+BRAND_OVERLAY_PATH = Path(__file__).resolve().parent.parent / "assets" / "brand_overlay.png"
+BRAND_MARGIN_RIGHT = 6
+BRAND_MARGIN_TOP = 12
+
 # Живой e2e-прогон с реальным STORYBOARD-адаптером (5 сцен, v2.md ориентир
 # "до 5-6 сцен") вскрыл: прежние 120с/100с CPU были откалиброваны под 2-сценовый
 # stub и x264-кодирование 5 клипов упиралось в MAX_CPU_SECONDS ещё до завершения
@@ -73,9 +81,11 @@ def compose_scenes(
     output_path: Path,
     subtitles_srt_path: Path | None = None,
     background_music_path: Path | None = None,
+    brand_overlay_path: Path | None = BRAND_OVERLAY_PATH,
 ) -> Path:
     """Склеивает клипы сцен (каждый уже содержит собственную озвучку/lipsync-результат),
-    опционально накладывает фоновую музыку и субтитры, нормализует к 9:16 MP4."""
+    опционально накладывает фоновую музыку и субтитры, нормализует к 9:16 MP4 и наносит
+    брендинг ToonTales (см. BRAND_OVERLAY_PATH) в правый верхний угол."""
     if not scenes:
         raise CompositionError("no scenes to compose")
 
@@ -97,9 +107,11 @@ def compose_scenes(
     map_audio = "[outa]"
 
     extra_inputs: list[str] = []
+    next_input_index = len(scenes)
     if background_music_path is not None:
         extra_inputs += ["-i", str(background_music_path)]
-        music_index = len(scenes)
+        music_index = next_input_index
+        next_input_index += 1
         filter_complex += f";[outa][{music_index}:a]amix=inputs=2:duration=first:dropout_transition=2[mixedout]"
         map_audio = "[mixedout]"
 
@@ -107,6 +119,17 @@ def compose_scenes(
         # subtitles-фильтр применяется после concat, отдельным проходом через filter_complex map.
         filter_complex += f";{map_video}subtitles={subtitles_srt_path}[subout]"
         map_video = "[subout]"
+
+    if brand_overlay_path is not None and brand_overlay_path.exists():
+        extra_inputs += ["-i", str(brand_overlay_path)]
+        brand_index = next_input_index
+        next_input_index += 1
+        # eof_action=repeat: одиночный PNG-кадр держится на всю длительность ролика.
+        filter_complex += (
+            f";{map_video}[{brand_index}:v]"
+            f"overlay=W-w-{BRAND_MARGIN_RIGHT}:{BRAND_MARGIN_TOP}:eof_action=repeat[branded]"
+        )
+        map_video = "[branded]"
 
     args = [
         *inputs,
