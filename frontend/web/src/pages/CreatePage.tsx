@@ -27,6 +27,11 @@ export function CreatePage(): JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Баланс загружен и равен нулю — пополнение только вручную (стартовый бонус
+  // выключен до платёжной системы), поэтому запуск блокируем с понятным текстом,
+  // а не молча роняем в 402.
+  const noBalance = !balanceLoading && balance === 0
+
   useEffect(() => {
     let active = true
     void api
@@ -130,11 +135,24 @@ export function CreatePage(): JSX.Element {
             </motion.span>
           </div>
 
+          {noBalance && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-6 rounded-2xl border border-amber-200/25 bg-amber-200/[0.07] p-4 text-sm leading-relaxed text-amber-100"
+            >
+              На балансе пока нет искр. Каждый ролик — это настоящая работа наших волшебников, поэтому
+              запуск открывается после пополнения баланса. Напиши нам — и мы зажжём для тебя первые искры.
+            </motion.div>
+          )}
+
           <MagicButton
             type="submit"
             fullWidth
             className="group mt-8 min-h-14 text-base sm:text-lg"
-            disabled={submitting || projectName.trim().length === 0 || scriptText.trim().length === 0}
+            disabled={
+              submitting || noBalance || projectName.trim().length === 0 || scriptText.trim().length === 0
+            }
           >
             {submitting ? (
               <>
@@ -143,6 +161,8 @@ export function CreatePage(): JSX.Element {
                 </motion.span>
                 Запускаем волшебство…
               </>
+            ) : noBalance ? (
+              'Нужно пополнить баланс ✦'
             ) : (
               'Создать мультфильм ✨'
             )}

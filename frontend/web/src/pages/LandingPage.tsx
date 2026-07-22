@@ -29,6 +29,17 @@ const steps = [
   },
 ] as const
 
+// Реальные стадии пайплайна генерации — тот же порядок, что видит пользователь на
+// экране прогресса. Разбираем на примере готового ролика в демо-секции.
+const pipeline = [
+  { icon: '📖', title: 'Придумываем сказку', description: 'Разбиваем твой текст на сцены, героев и раскадровку.' },
+  { icon: '🎨', title: 'Рисуем картинки', description: 'Для каждой сцены рождается свой яркий кадр-иллюстрация.' },
+  { icon: '🎞️', title: 'Оживляем сцены', description: 'Кадры превращаются в плавную анимацию с движением.' },
+  { icon: '🎙️', title: 'Записываем голоса', description: 'Герои и рассказчик получают живую озвучку.' },
+  { icon: '💋', title: 'Синхронизируем губы', description: 'Речь точно ложится на движения персонажей.' },
+  { icon: '✨', title: 'Собираем ролик', description: 'Склеиваем сцены, звук и музыку в готовый мультфильм.' },
+] as const
+
 export function LandingPage(): JSX.Element {
   const { isAuthenticated } = useAuth()
   const navigate = useNavigate()
@@ -172,6 +183,84 @@ export function LandingPage(): JSX.Element {
             </motion.article>
           ))}
         </motion.div>
+      </section>
+
+      <section className="relative mx-auto max-w-7xl px-4 pb-24 sm:px-6 lg:px-8 lg:pb-32" aria-labelledby="demo-title">
+        <div className="mx-auto max-w-3xl text-center">
+          <p className="text-sm font-extrabold uppercase tracking-[0.25em] text-amber-200">Смотри, как это работает</p>
+          <h2 id="demo-title" className="font-display mt-3 text-4xl font-bold text-white sm:text-5xl">
+            Один пример — <span className="text-gradient">целый мультфильм</span>
+          </h2>
+          <p className="mt-4 text-lg leading-relaxed text-violet-200">
+            Этот ролик мы собрали в ToonTales от начала до конца. Посмотри результат, а рядом — путь, который прошла история.
+          </p>
+        </div>
+
+        <div className="mt-12 grid items-start gap-8 lg:grid-cols-[1.15fr_1fr]">
+          <motion.div
+            initial={{ opacity: 0, y: 24, scale: 0.96 }}
+            whileInView={{ opacity: 1, y: 0, scale: 1 }}
+            viewport={{ once: true, amount: 0.3 }}
+            transition={{ type: 'spring', stiffness: 90, damping: 18 }}
+            className="relative overflow-hidden rounded-[2rem] border border-white/12 bg-black/30 p-2 shadow-[0_30px_90px_rgba(5,3,25,0.4)] backdrop-blur-xl"
+          >
+            <div className="pointer-events-none absolute -inset-1 rounded-[2.2rem] bg-gradient-to-br from-rose-300/20 via-violet-400/10 to-cyan-300/20 blur-xl" aria-hidden="true" />
+            <video
+              className="relative w-full rounded-[1.6rem]"
+              controls
+              playsInline
+              preload="metadata"
+              poster="/demo-poster.jpg"
+            >
+              <source src="/demo.mp4" type="video/mp4" />
+              Твой браузер не умеет показывать это видео.
+            </video>
+          </motion.div>
+
+          <motion.ol
+            variants={staggerContainer}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, amount: 0.15 }}
+            className="space-y-3"
+          >
+            {pipeline.map((stage, index) => (
+              <motion.li
+                key={stage.title}
+                variants={riseItem}
+                whileHover={{ x: 6 }}
+                className="flex items-start gap-4 rounded-2xl border border-white/8 bg-white/[0.04] p-4 backdrop-blur-md"
+              >
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-white/12 bg-white/8 text-xl shadow-inner" aria-hidden="true">
+                  {stage.icon}
+                </span>
+                <div>
+                  <h3 className="font-display text-lg font-semibold text-white">
+                    <span className="mr-2 text-sm font-bold text-amber-200/70">{String(index + 1).padStart(2, '0')}</span>
+                    {stage.title}
+                  </h3>
+                  <p className="mt-1 text-sm leading-relaxed text-violet-200">{stage.description}</p>
+                </div>
+              </motion.li>
+            ))}
+          </motion.ol>
+        </div>
+
+        <div className="mt-12 flex justify-center">
+          <MagicButton
+            onClick={startCreating}
+            className="group min-h-14 rounded-[1.35rem] px-8 text-lg"
+          >
+            Хочу такую же сказку
+            <motion.span
+              animate={{ rotate: [0, 16, -12, 0], scale: [1, 1.25, 0.95, 1] }}
+              transition={{ duration: 1.8, repeat: Infinity, repeatDelay: 0.8 }}
+              aria-hidden="true"
+            >
+              ✨
+            </motion.span>
+          </MagicButton>
+        </div>
       </section>
     </PageTransition>
   )

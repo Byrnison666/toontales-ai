@@ -78,7 +78,7 @@ export function AuthPage({ mode }: AuthPageProps): JSX.Element {
             {isRegister ? 'Начнём сказку?' : 'С возвращением'}
           </h1>
           <p className="mt-2 text-sm text-violet-200">
-            {isRegister ? 'Создай аккаунт и получи стартовые кредиты на первый ролик.' : 'Твои истории уже ждут продолжения.'}
+            {isRegister ? 'Создай аккаунт и загляни в волшебную мастерскую историй.' : 'Твои истории уже ждут продолжения.'}
           </p>
         </div>
 
