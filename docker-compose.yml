@@ -5,6 +5,13 @@ x-app: &app
     dockerfile: Dockerfile
   env_file:
     - .env
+  # environment имеет приоритет над env_file: .env хранит localhost (для нативного
+  # запуска uvicorn/celery без Docker), но внутри compose-сети Postgres/Redis —
+  # это сервисы по именам postgres/redis, а localhost был бы самим контейнером.
+  # test_database_url в проде не используется (только integration-тесты).
+  environment:
+    TOONTALES_DATABASE_URL: postgresql+asyncpg://toontales:toontales@postgres:5432/toontales
+    TOONTALES_REDIS_URL: redis://redis:6379/0
 
 services:
   postgres:

@@ -1,0 +1,25 @@
+[Unit]
+Description=ToonTales AI — Celery worker
+After=network.target postgresql.service redis-server.service toontales-migrate.service
+Requires=postgresql.service redis-server.service
+Wants=toontales-migrate.service
+
+[Service]
+Type=simple
+User=iorek
+Group=iorek
+WorkingDirectory=/home/iorek/it/toontales-ai
+EnvironmentFile=/home/iorek/it/toontales-ai/.env
+# Override поверх .env: worker и beat на одном хосте не могут делить один
+# metrics-порт (в docker-compose они в разных контейнерах). worker=9101.
+Environment=TOONTALES_METRICS_PORT=9101
+# --pool=threads: задачи I/O-bound (HTTP к провайдерам + polling, FFmpeg через
+# subprocess не держит GIL). threads-пул исполняет задачи в MainProcess, поэтому
+# Prometheus-инкременты из задач видны на metrics-сервере (9101); prefork-форки
+# иначе потребовали бы PROMETHEUS_MULTIPROC_DIR-обвязки.
+ExecStart=/home/iorek/it/toontales-ai/.venv/bin/celery -A toontales_ai.workers.celery_app worker --pool=threads --concurrency=4 --loglevel=info
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

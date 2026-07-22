@@ -1,0 +1,22 @@
+[Unit]
+Description=ToonTales AI — Celery beat (scheduler)
+After=network.target postgresql.service redis-server.service toontales-migrate.service
+Requires=postgresql.service redis-server.service
+Wants=toontales-migrate.service
+
+[Service]
+Type=simple
+User=iorek
+Group=iorek
+WorkingDirectory=/home/iorek/it/toontales-ai
+EnvironmentFile=/home/iorek/it/toontales-ai/.env
+# beat=9102 (worker=9101) — разные metrics-порты на одном хосте.
+Environment=TOONTALES_METRICS_PORT=9102
+# --schedule: файл расписания beat пишется в /tmp, а не в WorkingDirectory
+# (репозиторий) — не засоряем git и не требуем прав на запись в исходники.
+ExecStart=/home/iorek/it/toontales-ai/.venv/bin/celery -A toontales_ai.workers.celery_app beat --loglevel=info --schedule /tmp/toontales-celerybeat-schedule
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

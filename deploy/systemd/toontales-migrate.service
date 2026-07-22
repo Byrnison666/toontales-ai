@@ -1,0 +1,16 @@
+[Unit]
+Description=ToonTales AI — alembic migrations (one-shot before api/worker/beat)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=iorek
+Group=iorek
+WorkingDirectory=/home/iorek/it/toontales-ai
+EnvironmentFile=/home/iorek/it/toontales-ai/.env
+ExecStart=/home/iorek/it/toontales-ai/.venv/bin/alembic upgrade head
+
+[Install]
+WantedBy=multi-user.target
