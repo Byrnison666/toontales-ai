@@ -120,6 +120,7 @@ class CreditTransactionType(str, enum.Enum):
     CHARGE = "charge"
     RELEASE = "release"
     ADJUSTMENT = "adjustment"
+    TOPUP = "topup"  # пополнение баланса (billing); в MVP — только через admin-секрет
 
 
 class OutboxStatus(str, enum.Enum):

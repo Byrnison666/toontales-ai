@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expires_minutes: int = 24 * 60
 
+    # Секрет для admin-эндпоинтов (пополнение баланса). В MVP нет ролей/отдельной
+    # admin-аутентификации — POST /billing/admin/topup защищён этим секретом в
+    # заголовке X-Admin-Key, чтобы обычный юзер не начислял себе кредиты бесплатно.
+    admin_api_key: str = ""
+
     # fail-closed по умолчанию (review.md §10) — недоступность модератора блокирует контент.
     moderation_fail_open: bool = False
 
