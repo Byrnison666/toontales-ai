@@ -1,8 +1,11 @@
+import pytest
+
 from toontales_ai.domain.enums import (
     STAGE_DOWNSTREAM,
     STAGE_IMMEDIATE_NEXT,
     STAGE_PREDECESSORS,
     Stage,
+    _build_stage_graph,
 )
 
 
@@ -35,3 +38,37 @@ def test_every_non_terminal_stage_has_predecessors_defined():
 def test_composition_is_terminal():
     assert STAGE_IMMEDIATE_NEXT[Stage.COMPOSITION] == ()
     assert STAGE_DOWNSTREAM[Stage.COMPOSITION] == ()
+
+
+@pytest.mark.parametrize("lipsync_enabled", [True, False])
+def test_both_dag_modes_are_internally_consistent(lipsync_enabled):
+    """Инварианты (downstream = замыкание immediate_next; у каждой не-терминальной
+    стадии есть predecessors) обязаны держаться в обоих режимах, не только в дефолтном."""
+    downstream, immediate_next, predecessors, _ = _build_stage_graph(lipsync_enabled=lipsync_enabled)
+
+    def closure(stage: Stage) -> set[Stage]:
+        seen: set[Stage] = set()
+        frontier = list(immediate_next.get(stage, ()))
+        while frontier:
+            s = frontier.pop()
+            if s in seen:
+                continue
+            seen.add(s)
+            frontier.extend(immediate_next.get(s, ()))
+        return seen
+
+    for stage in downstream:
+        assert set(downstream[stage]) == closure(stage), (lipsync_enabled, stage)
+    for stage, nexts in immediate_next.items():
+        for candidate in nexts:
+            assert candidate in predecessors, (lipsync_enabled, candidate)
+
+
+def test_voiceover_graph_drops_lipsync_and_joins_video_on_audio():
+    _, immediate_next, predecessors, scene_scoped = _build_stage_graph(lipsync_enabled=False)
+    assert Stage.LIPSYNC not in immediate_next
+    assert Stage.LIPSYNC not in scene_scoped
+    # VIDEO — join на (IMAGE, AUDIO); COMPOSITION зависит от VIDEO.
+    assert set(predecessors[Stage.VIDEO]) == {Stage.IMAGE, Stage.AUDIO}
+    assert predecessors[Stage.COMPOSITION] == (Stage.VIDEO,)
+    assert immediate_next[Stage.AUDIO] == (Stage.VIDEO,)

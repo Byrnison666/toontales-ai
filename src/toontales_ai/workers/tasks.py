@@ -6,6 +6,7 @@ loop и своя sync Session на каждый вызов (review.md §7 — н
 между задачами)."""
 
 import asyncio
+import math
 import random
 import tempfile
 import uuid
@@ -22,13 +23,22 @@ from toontales_ai.adapters.image.runway import RunwayImageTransientError
 from toontales_ai.adapters.lipsync.sync_so import SyncTransientError
 from toontales_ai.adapters.registry import get_adapter
 from toontales_ai.adapters.storyboard.anthropic import AnthropicTransientError
-from toontales_ai.adapters.video.runway import RunwayTransientError
+from toontales_ai.adapters.video.runway import (
+    MAX_DURATION_SECONDS,
+    MIN_DURATION_SECONDS,
+    RunwayTransientError,
+)
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import MediaAsset, Scene, Task
 from toontales_ai.orchestration import provider_semaphore
 from toontales_ai.orchestration.pipeline_sync import complete_task
-from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
+from toontales_ai.storage.composition import (
+    CompositionError,
+    SceneClip,
+    compose_scenes,
+    probe_duration_seconds,
+)
 from toontales_ai.storage.db import SyncSessionLocal
 from toontales_ai.storage.s3 import DownloadSizeExceededError, download_to_path, presigned_get_url, upload_from_path
 from toontales_ai.workers.celery_app import celery_app
@@ -99,12 +109,33 @@ def _exponential_backoff(attempt: int, base: int = 2, cap: int = MAX_POLL_BACKOF
     return min(cap, base * (2**attempt))
 
 
+def _unique_scene_asset_key(session, scene_id, *, kind: MediaKind, stage: Stage) -> str:
+    """storage_key единственного MediaAsset сцены заданного kind/stage. Fail-fast при
+    отсутствии/неоднозначности (review.md §10 P2: недетерминированный выбор артефакта
+    не должен решаться молча — напр. thumbnail вместо видео)."""
+    candidates = session.execute(
+        select(MediaAsset)
+        .join(Task, Task.id == MediaAsset.task_id)
+        .where(MediaAsset.scene_id == scene_id, MediaAsset.kind == kind, Task.stage == stage)
+    ).scalars().all()
+    if not candidates:
+        raise CompositionError(f"no {stage.value} {kind.value} asset for scene {scene_id}")
+    if len(candidates) > 1:
+        raise CompositionError(
+            f"ambiguous {stage.value} {kind.value} asset for scene {scene_id}: "
+            f"{len(candidates)} candidates, expected exactly one"
+        )
+    return candidates[0].storage_key
+
+
 def _run_composition(session, task: Task) -> ProviderSubmission:
-    """Реальная FFmpeg-сборка (v2.md stage 6): скачивает per-scene клипы стадии
-    LIPSYNC (канонический "финальный клип сцены" в DAG — см. STAGE_PREDECESSORS),
-    склеивает и загружает результат обратно в S3. Требует реального object storage
-    с уже загруженными артефактами — при stub-адаптерах (без реального S3) упадёт
-    на скачивании, это ожидаемо до подключения настоящих provider-адаптеров."""
+    """Реальная FFmpeg-сборка (v2.md stage 6): скачивает per-scene "финальный клип
+    сцены" из DAG (LIPSYNC в lipsync-режиме, VIDEO в voiceover — см. STAGE_PREDECESSORS),
+    склеивает и загружает результат в S3. В voiceover дополнительно тянет AUDIO-ассет
+    сцены — озвучка кладётся поверх немого видео (длина сцены = длине озвучки)."""
+    lipsync_enabled = get_settings().lipsync_enabled
+    video_source_stage = Stage.LIPSYNC if lipsync_enabled else Stage.VIDEO
+
     scenes = session.execute(
         select(Scene).where(Scene.generation_run_id == task.run_id).order_by(Scene.scene_index)
     ).scalars().all()
@@ -115,36 +146,31 @@ def _run_composition(session, task: Task) -> ProviderSubmission:
         tmp_dir = Path(tmp)
         clips: list[SceneClip] = []
         for scene in scenes:
-            candidates = session.execute(
-                select(MediaAsset)
-                .join(Task, Task.id == MediaAsset.task_id)
-                .where(
-                    MediaAsset.scene_id == scene.id,
-                    MediaAsset.kind == MediaKind.VIDEO,
-                    Task.stage == Stage.LIPSYNC,
-                )
-            ).scalars().all()
-            if not candidates:
-                raise CompositionError(f"no lipsync video asset for scene {scene.id}")
-            if len(candidates) > 1:
-                # Сегодня LIPSYNC-адаптеры всегда возвращают ровно один artifact (см.
-                # ImmediateMediaStubAdapter), поэтому это не должно происходить. Явный
-                # fail-fast вместо "просто взять последний по created_at" (review.md
-                # §10 P2: недетерминированный выбор мог тихо подставить не тот клип,
-                # напр. thumbnail вместо видео, если реальный провайдер когда-нибудь
-                # вернёт несколько video-артефактов на один Task).
-                raise CompositionError(
-                    f"ambiguous lipsync video asset for scene {scene.id}: "
-                    f"{len(candidates)} candidates, expected exactly one"
-                )
-            asset = candidates[0]
-
-            local_path = tmp_dir / f"scene_{scene.scene_index}.mp4"
+            video_key = _unique_scene_asset_key(session, scene.id, kind=MediaKind.VIDEO, stage=video_source_stage)
+            video_path = tmp_dir / f"scene_{scene.scene_index}.mp4"
             try:
-                download_to_path(asset.storage_key, local_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
+                download_to_path(video_key, video_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
             except DownloadSizeExceededError as exc:
                 raise CompositionError(str(exc)) from exc
-            clips.append(SceneClip(video_path=local_path))
+
+            if lipsync_enabled:
+                clips.append(SceneClip(video_path=video_path))
+                continue
+
+            # Voiceover: немое видео + отдельная озвучка, длина сцены = длине озвучки.
+            audio_key = _unique_scene_asset_key(session, scene.id, kind=MediaKind.AUDIO, stage=Stage.AUDIO)
+            audio_path = tmp_dir / f"scene_{scene.scene_index}.audio"
+            try:
+                download_to_path(audio_key, audio_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
+            except DownloadSizeExceededError as exc:
+                raise CompositionError(str(exc)) from exc
+            clips.append(
+                SceneClip(
+                    video_path=video_path,
+                    audio_path=audio_path,
+                    audio_duration=probe_duration_seconds(audio_path),
+                )
+            )
 
         output_path = tmp_dir / "final.mp4"
         compose_scenes(clips, output_path=output_path)
@@ -178,6 +204,22 @@ def _failed_submission(error_code: str, error_detail: str) -> ProviderSubmission
             error_detail=error_detail,
         ),
     )
+
+
+def _scene_audio_duration_seconds(session, scene_id) -> int:
+    """Длина озвучки сцены в секундах, ceil + кламп в Runway-диапазон 2..10 (voiceover:
+    видео генерируется под озвучку). Значение кладётся и в Runway duration, и в
+    task.input_snapshot для точного real_cost — поэтому клампим здесь, чтобы совпало
+    с тем, что Runway фактически отрендерит."""
+    audio_key = _unique_scene_asset_key(session, scene_id, kind=MediaKind.AUDIO, stage=Stage.AUDIO)
+    with tempfile.TemporaryDirectory(prefix="toontales-audioprobe-") as td:
+        tmp_path = Path(td) / "audio"
+        try:
+            download_to_path(audio_key, tmp_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
+        except DownloadSizeExceededError as exc:
+            raise CompositionError(str(exc)) from exc
+        duration = probe_duration_seconds(tmp_path)
+    return max(MIN_DURATION_SECONDS, min(MAX_DURATION_SECONDS, math.ceil(duration)))
 
 
 def _build_stage_input(session, task: Task) -> StageInput:
@@ -221,6 +263,10 @@ def _build_stage_input(session, task: Task) -> StageInput:
                     )
                 if image_assets:
                     payload["source_image_url"] = presigned_get_url(image_assets[0].storage_key)
+                if not get_settings().lipsync_enabled:
+                    # Voiceover: VIDEO — join на (IMAGE, AUDIO); длину видео подгоняем
+                    # под уже готовую озвучку сцены (Runway duration = ceil(audio), 2..10).
+                    payload["duration_seconds"] = _scene_audio_duration_seconds(session, scene.id)
             elif task.stage == Stage.LIPSYNC:
                 # LIPSYNC — join-стадия (STAGE_PREDECESSORS: требует VIDEO и AUDIO).
                 # Реальному адаптеру (SyncAdapter) нужны HTTPS URL уже готовых
@@ -297,6 +343,11 @@ def process_task(self: CeleryTask, task_id: str) -> None:
             # и такая ошибка утекала из Celery-задачи необработанной, минуя
             # domain-level FAILED/retry_count путь ниже.
             stage_input = _build_stage_input(session, task)
+            if task.stage == Stage.VIDEO and "duration_seconds" in stage_input.payload:
+                # Voiceover: сохраняем фактическую длину видео (= озвучке) для real_cost —
+                # Runway её в poll не возвращает (см. pipeline_sync.complete_task).
+                task.input_snapshot = {**(task.input_snapshot or {}), "duration_seconds": stage_input.payload["duration_seconds"]}
+                session.commit()
             if task.stage == Stage.COMPOSITION:
                 # Composition — локальный FFmpeg-слой, не внешний provider adapter (v2.md stage 6).
                 try:

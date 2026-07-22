@@ -216,7 +216,11 @@ def _advance(session: Session, task: Task) -> None:
     for candidate in STAGE_IMMEDIATE_NEXT.get(task.stage, ()):
         predecessor_satisfied: dict[Stage, bool] = {}
         if candidate == Stage.COMPOSITION:
-            predecessor_satisfied[Stage.LIPSYNC] = _all_scenes_stage_completed(session, task.run_id, Stage.LIPSYNC)
+            # COMPOSITION — run-level join: нужен полный набор предшественника по ВСЕМ
+            # сценам. Предшественник берём из DAG (LIPSYNC в lipsync-режиме, VIDEO в
+            # voiceover), а не хардкодом — форма зависит от settings.lipsync_enabled.
+            for pred in STAGE_PREDECESSORS.get(Stage.COMPOSITION, ()):
+                predecessor_satisfied[pred] = _all_scenes_stage_completed(session, task.run_id, pred)
         else:
             for req_stage in STAGE_PREDECESSORS.get(candidate, ()):
                 if req_stage == task.stage:
@@ -365,7 +369,14 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         task.finished_at = datetime.now(timezone.utc)
         task.provider_job_id = result.provider_job_id
         task.provider_status = result.status
-        task.real_cost_usd = real_cost.compute_real_cost_usd(task.stage, result.usage)
+        # В voiceover-режиме длина видео = длине озвучки (Runway duration переменный),
+        # но poll-ответ Runway её не возвращает — берём фактическую из input_snapshot,
+        # куда её положил worker при submit. В lipsync-режиме ключа нет → usage от
+        # адаптера (фикс-длина) используется как есть.
+        usage_for_cost = result.usage
+        if task.stage == Stage.VIDEO and task.input_snapshot and "duration_seconds" in task.input_snapshot:
+            usage_for_cost = {**(result.usage or {}), "duration_seconds": task.input_snapshot["duration_seconds"]}
+        task.real_cost_usd = real_cost.compute_real_cost_usd(task.stage, usage_for_cost)
         outcome_stage, outcome_status = task.stage.value, "completed"
         if task.real_cost_usd is not None:
             outcome_real_cost = float(task.real_cost_usd)

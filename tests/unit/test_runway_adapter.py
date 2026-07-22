@@ -138,6 +138,29 @@ async def test_submit_uses_model_from_settings(monkeypatch):
     assert _FakeAsyncClient.last_post_call["json"]["model"] == "gen4.5"
 
 
+@pytest.mark.parametrize(
+    "raw_duration,expected",
+    [
+        (None, 5),      # не задано (lipsync-режим) -> DEFAULT
+        (7, 7),         # voiceover: длина озвучки
+        (2.9, 2),       # float -> int вниз
+        (99, 10),       # кламп сверху (Runway max 10)
+        (1, 2),         # кламп снизу (Runway min 2)
+        ("bad", 5),     # мусор -> DEFAULT
+    ],
+)
+async def test_submit_duration_resolved_from_payload(monkeypatch, raw_duration, expected):
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data={"id": "task_d", "status": "PENDING"})
+    payload = {"source_image_url": "https://example.com/x.png", "image_prompt": "a fox"}
+    if raw_duration is not None:
+        payload["duration_seconds"] = raw_duration
+
+    adapter = RunwayAdapter()
+    await adapter.submit(StageInput(task_id="t1", scene_id="s1", payload=payload), idempotency_key="k")
+    assert _FakeAsyncClient.last_post_call["json"]["duration"] == expected
+
+
 async def test_submit_rejects_missing_source_image(monkeypatch):
     adapter = RunwayAdapter()
     with pytest.raises(RunwayAPIError):

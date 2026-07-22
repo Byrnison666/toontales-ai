@@ -30,41 +30,73 @@ class Stage(str, enum.Enum):
 
 
 # DAG зависимостей стадий (review.md §10: статическая таблица вместо generic DAG-engine).
-# Partial rerun выбранного stage обязан пересчитать весь набор ниже по цепочке (review.md §3).
-STAGE_DOWNSTREAM: dict[Stage, tuple[Stage, ...]] = {
-    Stage.STORYBOARD: (Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC, Stage.COMPOSITION),
-    Stage.IMAGE: (Stage.VIDEO, Stage.LIPSYNC, Stage.COMPOSITION),
-    Stage.VIDEO: (Stage.LIPSYNC, Stage.COMPOSITION),
-    Stage.AUDIO: (Stage.LIPSYNC, Stage.COMPOSITION),
-    Stage.LIPSYNC: (Stage.COMPOSITION,),
-    Stage.COMPOSITION: (),
-}
+# Форма зависит от settings.lipsync_enabled и фиксируется на старте процесса:
+#   lipsync=True  — STORYBOARD→IMAGE,AUDIO; IMAGE→VIDEO; VIDEO+AUDIO→LIPSYNC; LIPSYNC→COMPOSITION
+#   lipsync=False — STORYBOARD→IMAGE,AUDIO; IMAGE+AUDIO→VIDEO (join); VIDEO→COMPOSITION (voiceover)
+# STAGE_DOWNSTREAM — полное транзитивное замыкание вниз (инвалидация при partial rerun,
+# review.md §3). STAGE_IMMEDIATE_NEXT — непосредственная прогрессия. STAGE_PREDECESSORS —
+# join-предшественники (стадия создаётся, когда ВСЕ предшественники завершены).
+def _build_stage_graph(*, lipsync_enabled: bool):
+    if lipsync_enabled:
+        downstream = {
+            Stage.STORYBOARD: (Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC, Stage.COMPOSITION),
+            Stage.IMAGE: (Stage.VIDEO, Stage.LIPSYNC, Stage.COMPOSITION),
+            Stage.VIDEO: (Stage.LIPSYNC, Stage.COMPOSITION),
+            Stage.AUDIO: (Stage.LIPSYNC, Stage.COMPOSITION),
+            Stage.LIPSYNC: (Stage.COMPOSITION,),
+            Stage.COMPOSITION: (),
+        }
+        immediate_next = {
+            Stage.STORYBOARD: (Stage.IMAGE, Stage.AUDIO),
+            Stage.IMAGE: (Stage.VIDEO,),
+            Stage.VIDEO: (Stage.LIPSYNC,),
+            Stage.AUDIO: (Stage.LIPSYNC,),
+            Stage.LIPSYNC: (Stage.COMPOSITION,),
+            Stage.COMPOSITION: (),
+        }
+        predecessors = {
+            Stage.IMAGE: (Stage.STORYBOARD,),
+            Stage.AUDIO: (Stage.STORYBOARD,),
+            Stage.VIDEO: (Stage.IMAGE,),
+            Stage.LIPSYNC: (Stage.VIDEO, Stage.AUDIO),
+            Stage.COMPOSITION: (Stage.LIPSYNC,),
+        }
+        scene_scoped = frozenset({Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC})
+    else:
+        # Voiceover: LIPSYNC исключён, VIDEO — join на (IMAGE, AUDIO) (нужна длина
+        # озвучки для duration видео), COMPOSITION зависит от VIDEO.
+        downstream = {
+            Stage.STORYBOARD: (Stage.IMAGE, Stage.AUDIO, Stage.VIDEO, Stage.COMPOSITION),
+            Stage.IMAGE: (Stage.VIDEO, Stage.COMPOSITION),
+            Stage.AUDIO: (Stage.VIDEO, Stage.COMPOSITION),
+            Stage.VIDEO: (Stage.COMPOSITION,),
+            Stage.COMPOSITION: (),
+        }
+        immediate_next = {
+            Stage.STORYBOARD: (Stage.IMAGE, Stage.AUDIO),
+            Stage.IMAGE: (Stage.VIDEO,),
+            Stage.AUDIO: (Stage.VIDEO,),
+            Stage.VIDEO: (Stage.COMPOSITION,),
+            Stage.COMPOSITION: (),
+        }
+        predecessors = {
+            Stage.IMAGE: (Stage.STORYBOARD,),
+            Stage.AUDIO: (Stage.STORYBOARD,),
+            Stage.VIDEO: (Stage.IMAGE, Stage.AUDIO),
+            Stage.COMPOSITION: (Stage.VIDEO,),
+        }
+        scene_scoped = frozenset({Stage.IMAGE, Stage.VIDEO, Stage.AUDIO})
+    return downstream, immediate_next, predecessors, scene_scoped
 
-# Непосредственно следующие стадии при прогрессии пайплайна (в отличие от STAGE_DOWNSTREAM,
-# который даёт полное транзитивное замыкание для инвалидации при partial rerun).
-STAGE_IMMEDIATE_NEXT: dict[Stage, tuple[Stage, ...]] = {
-    Stage.STORYBOARD: (Stage.IMAGE, Stage.AUDIO),
-    Stage.IMAGE: (Stage.VIDEO,),
-    Stage.VIDEO: (Stage.LIPSYNC,),
-    Stage.AUDIO: (Stage.LIPSYNC,),
-    Stage.LIPSYNC: (Stage.COMPOSITION,),
-    Stage.COMPOSITION: (),
-}
 
-# Непосредственные предшественники для join-стадий: стадия создаётся только когда
-# ВСЕ предшествующие стадии для той же сцены (video зависит только от image) завершены.
-STAGE_PREDECESSORS: dict[Stage, tuple[Stage, ...]] = {
-    Stage.IMAGE: (Stage.STORYBOARD,),
-    Stage.AUDIO: (Stage.STORYBOARD,),
-    Stage.VIDEO: (Stage.IMAGE,),
-    Stage.LIPSYNC: (Stage.VIDEO, Stage.AUDIO),
-    Stage.COMPOSITION: (Stage.LIPSYNC,),
-}
+from toontales_ai.config.settings import get_settings  # noqa: E402  (после Stage для _build_stage_graph)
 
-# Стадии, привязанные к конкретной сцене, а не ко всему run.
-SCENE_SCOPED_STAGES: frozenset[Stage] = frozenset(
-    {Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC}
-)
+(
+    STAGE_DOWNSTREAM,
+    STAGE_IMMEDIATE_NEXT,
+    STAGE_PREDECESSORS,
+    SCENE_SCOPED_STAGES,
+) = _build_stage_graph(lipsync_enabled=get_settings().lipsync_enabled)
 
 
 class TaskStatus(str, enum.Enum):

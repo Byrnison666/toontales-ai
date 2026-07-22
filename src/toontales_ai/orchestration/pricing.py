@@ -17,6 +17,11 @@ STAGE_COST: dict[Stage, int] = {
 
 def estimate_run_cost(scene_count: int) -> int:
     """Грубая смета до старта run: storyboard один раз + per-scene стадии.
-    Используется как GenerationRun.max_budget / estimated_cost (review.md §10)."""
-    per_scene = STAGE_COST[Stage.IMAGE] + STAGE_COST[Stage.VIDEO] + STAGE_COST[Stage.AUDIO] + STAGE_COST[Stage.LIPSYNC]
+    Используется как GenerationRun.max_budget / estimated_cost (review.md §10).
+    В voiceover-режиме (settings.lipsync_enabled=False) стадии LIPSYNC нет."""
+    from toontales_ai.config.settings import get_settings
+
+    per_scene = STAGE_COST[Stage.IMAGE] + STAGE_COST[Stage.VIDEO] + STAGE_COST[Stage.AUDIO]
+    if get_settings().lipsync_enabled:
+        per_scene += STAGE_COST[Stage.LIPSYNC]
     return STAGE_COST[Stage.STORYBOARD] + scene_count * per_scene + STAGE_COST[Stage.COMPOSITION]

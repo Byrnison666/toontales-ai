@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # в orchestration/real_cost.py — тариф модельно-зависимый.
     runway_video_model: str = "gen4_turbo"
 
+    # Lipsync-стадия (Sync.so). True (default) — говорящие губы, видео фикс-длины,
+    # звук вжигается в клип. False — voiceover-режим: озвучка кладётся поверх немого
+    # видео на этапе composition, длина видео подгоняется под озвучку (Runway
+    # duration = длине аудио, кламп 2..10с). Voiceover убирает стадию LIPSYNC из DAG
+    # (VIDEO становится join на IMAGE+AUDIO) и зависимость от Sync.so — дешевле и без
+    # concurrency-боттлнека. Меняет форму DAG (domain/enums.py) на старте процесса.
+    lipsync_enabled: bool = True
+
     sync_api_key: str = ""
     sync_model: str = "lipsync-2"
     # Лимит одновременных генераций Sync.so (тариф: hobbyist=1). Admission control

@@ -42,7 +42,38 @@ class CompositionError(Exception):
 @dataclass(frozen=True, slots=True)
 class SceneClip:
     video_path: Path
+    # voiceover-режим: отдельная озвучка кладётся поверх немого видео. audio_duration —
+    # эталонная длина сцены (сек): видео короче -> freeze последнего кадра, длиннее ->
+    # тримминг, так речь не режется. None -> lipsync-режим (звук уже в video_path).
     audio_path: Path | None = None
+    audio_duration: float | None = None
+
+
+# Максимальный freeze хвоста видео под озвучку (voiceover). Видео Runway 2..10с,
+# озвучка сцены-реплики короткая — 60с с запасом гарантирует, что кадра хватит на
+# всю длину аудио; лишнее отбрасывается trim'ом (кадры сверх нужного не генерируются).
+MAX_FREEZE_SECONDS = 60
+
+
+def probe_duration_seconds(path: Path) -> float:
+    """Длительность медиафайла (сек) через ffprobe. Нужна и для подбора Runway
+    duration под озвучку, и для точной нарезки сцены в composition."""
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise CompositionError(f"ffprobe failed (code {proc.returncode}): {proc.stderr[-500:]}")
+    raw = proc.stdout.strip()
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise CompositionError(f"ffprobe returned non-numeric duration: {raw!r}") from exc
 
 
 def _limit_resources() -> None:
@@ -83,31 +114,67 @@ def compose_scenes(
     background_music_path: Path | None = None,
     brand_overlay_path: Path | None = BRAND_OVERLAY_PATH,
 ) -> Path:
-    """Склеивает клипы сцен (каждый уже содержит собственную озвучку/lipsync-результат),
-    опционально накладывает фоновую музыку и субтитры, нормализует к 9:16 MP4 и наносит
-    брендинг ToonTales (см. BRAND_OVERLAY_PATH) в правый верхний угол."""
+    """Склеивает клипы сцен, опционально накладывает фоновую музыку и субтитры,
+    нормализует к 9:16 MP4 и наносит брендинг ToonTales (см. BRAND_OVERLAY_PATH).
+
+    Два режима на клип: lipsync (audio_path=None — звук уже в видео, берётся дорожка
+    [i:a]) и voiceover (audio_path задан — отдельная озвучка кладётся поверх немого
+    видео, длина сцены = audio_duration, видео короче -> freeze хвоста, длиннее ->
+    тримминг). Режим определяется наличием audio_path у клипов."""
     if not scenes:
         raise CompositionError("no scenes to compose")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    voiceover = any(scene.audio_path is not None for scene in scenes)
+
     inputs: list[str] = []
+    for scene in scenes:
+        inputs += ["-i", str(scene.video_path)]
+
+    audio_input_index: dict[int, int] = {}
+    next_input_index = len(scenes)
+    if voiceover:
+        for i, scene in enumerate(scenes):
+            if scene.audio_path is None or scene.audio_duration is None:
+                # Смешанный режим (часть клипов с озвучкой, часть без) не поддержан —
+                # режим глобальный по run (settings.lipsync_enabled).
+                raise CompositionError(
+                    f"voiceover clip {i} requires both audio_path and audio_duration"
+                )
+            inputs += ["-i", str(scene.audio_path)]
+            audio_input_index[i] = next_input_index
+            next_input_index += 1
+
     filter_parts: list[str] = []
     for i, scene in enumerate(scenes):
-        inputs += ["-i", str(scene.video_path)]
-        filter_parts.append(
+        base = (
             f"[{i}:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}]"
+            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1"
         )
+        if voiceover:
+            duration = scene.audio_duration
+            filter_parts.append(
+                f"{base},tpad=stop_mode=clone:stop_duration={MAX_FREEZE_SECONDS},"
+                f"trim=duration={duration},setpts=PTS-STARTPTS[v{i}]"
+            )
+            filter_parts.append(
+                f"[{audio_input_index[i]}:a]atrim=duration={duration},"
+                f"asetpts=PTS-STARTPTS,apad=whole_dur={duration}[a{i}]"
+            )
+        else:
+            filter_parts.append(f"{base}[v{i}]")
 
-    concat_inputs = "".join(f"[v{i}][{i}:a]" for i in range(len(scenes)))
+    if voiceover:
+        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(scenes)))
+    else:
+        concat_inputs = "".join(f"[v{i}][{i}:a]" for i in range(len(scenes)))
     filter_complex = ";".join(filter_parts) + f";{concat_inputs}concat=n={len(scenes)}:v=1:a=1[outv][outa]"
 
     map_video = "[outv]"
     map_audio = "[outa]"
 
     extra_inputs: list[str] = []
-    next_input_index = len(scenes)
     if background_music_path is not None:
         extra_inputs += ["-i", str(background_music_path)]
         music_index = next_input_index

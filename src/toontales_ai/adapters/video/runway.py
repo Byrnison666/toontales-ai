@@ -36,7 +36,9 @@ RUNWAY_API_VERSION = "2024-11-06"
 REQUEST_TIMEOUT_SECONDS = 30.0
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
-DEFAULT_DURATION_SECONDS = 5  # gen4.5: int 2..10; ориентир v2.md "до 5-6 сцен на 30-секундный ролик"
+DEFAULT_DURATION_SECONDS = 5  # gen4.5/gen4_turbo: int 2..10; ориентир v2.md "до 5-6 сцен на 30-секундный ролик"
+MIN_DURATION_SECONDS = 2  # нижняя граница enum duration у Runway
+MAX_DURATION_SECONDS = 10  # верхняя граница enum duration у Runway
 VERTICAL_RATIO = "720:1280"  # 9:16 — v2.md "рендер итогового MP4 9:16"
 MAX_PROMPT_TEXT_CHARS = 1000  # ограничение gen4.5 promptText (UTF-16 code units)
 MAX_OUTPUT_DOWNLOAD_BYTES = 200 * 1024 * 1024
@@ -67,6 +69,20 @@ def _raise_for_status(response: httpx.Response, *, context: str) -> None:
         raise RunwayTransientError(f"{context}: {response.status_code} {response.text[:500]}")
     if response.status_code >= 400:
         raise RunwayAPIError(f"{context}: {response.status_code} {response.text[:500]}")
+
+
+def _resolve_duration(raw) -> int:
+    """Длительность видео в секундах. В voiceover-режиме worker кладёт в payload
+    duration_seconds = длине озвучки (уже ceil'нутой); здесь — финальный кламп в
+    допустимый Runway диапазон 2..10. Отсутствует/мусор -> DEFAULT (lipsync-режим,
+    фикс-длина). Дробное/строку приводим к int вниз, затем кламп."""
+    if raw is None:
+        return DEFAULT_DURATION_SECONDS
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_DURATION_SECONDS
+    return max(MIN_DURATION_SECONDS, min(MAX_DURATION_SECONDS, value))
 
 
 def _build_prompt_text(payload: dict) -> str:
@@ -115,7 +131,7 @@ class RunwayAdapter:
             "promptImage": image_url,
             "promptText": prompt_text,
             "ratio": VERTICAL_RATIO,
-            "duration": DEFAULT_DURATION_SECONDS,
+            "duration": _resolve_duration(payload.payload.get("duration_seconds")),
         }
 
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:

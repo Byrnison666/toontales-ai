@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from toontales_ai.storage.composition import CompositionError, SceneClip, compose_scenes
+from toontales_ai.storage.composition import (
+    CompositionError,
+    SceneClip,
+    compose_scenes,
+    probe_duration_seconds,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg не установлен в этом окружении")
 
@@ -53,6 +58,77 @@ def test_compose_scenes_produces_valid_concatenated_mp4(tmp_path: Path):
     duration = _ffprobe_duration(result_path)
     # Суммарная длительность двух сцен (~2.5s) с допуском на контейнерные накладные расходы.
     assert 2.0 < duration < 3.0
+
+
+def _make_silent_clip(path: Path, *, duration: float, color: str) -> None:
+    """Немое видео (без аудиодорожки) — вход voiceover-режима."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-nostdin",
+            "-f", "lavfi", "-i", f"color=c={color}:s=640x360:d={duration}",
+            "-c:v", "libx264", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _make_audio(path: Path, *, duration: float, freq: int = 440) -> None:
+    subprocess.run(
+        ["ffmpeg", "-y", "-nostdin", "-f", "lavfi", "-i", f"sine=frequency={freq}:duration={duration}", str(path)],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_probe_duration_seconds(tmp_path: Path):
+    audio = tmp_path / "a.mp3"
+    _make_audio(audio, duration=2.0)
+    assert 1.8 < probe_duration_seconds(audio) < 2.2
+
+
+def test_voiceover_scene_length_matches_audio_freezing_short_video(tmp_path: Path):
+    # Видео короче озвучки -> freeze хвоста до длины аудио, речь не режется.
+    video = tmp_path / "scene_0.mp4"
+    audio = tmp_path / "scene_0.mp3"
+    _make_silent_clip(video, duration=1.0, color="red")
+    _make_audio(audio, duration=2.5)
+
+    output_path = tmp_path / "final.mp4"
+    compose_scenes(
+        [SceneClip(video_path=video, audio_path=audio, audio_duration=2.5)],
+        output_path=output_path,
+    )
+    assert output_path.exists()
+    # Сцена длится по озвучке (~2.5s), а не по видео (1.0s).
+    assert 2.3 < _ffprobe_duration(output_path) < 2.8
+
+
+def test_voiceover_trims_video_longer_than_audio(tmp_path: Path):
+    # Видео длиннее озвучки -> обрезается до длины аудио.
+    video = tmp_path / "scene_0.mp4"
+    audio = tmp_path / "scene_0.mp3"
+    _make_silent_clip(video, duration=4.0, color="blue")
+    _make_audio(audio, duration=1.5)
+
+    output_path = tmp_path / "final.mp4"
+    compose_scenes(
+        [SceneClip(video_path=video, audio_path=audio, audio_duration=1.5)],
+        output_path=output_path,
+    )
+    assert 1.3 < _ffprobe_duration(output_path) < 1.8
+
+
+def test_voiceover_requires_audio_duration(tmp_path: Path):
+    video = tmp_path / "scene_0.mp4"
+    audio = tmp_path / "scene_0.mp3"
+    _make_silent_clip(video, duration=1.0, color="green")
+    _make_audio(audio, duration=1.0)
+    with pytest.raises(CompositionError):
+        compose_scenes(
+            [SceneClip(video_path=video, audio_path=audio, audio_duration=None)],
+            output_path=tmp_path / "out.mp4",
+        )
 
 
 def test_compose_scenes_rejects_empty_input(tmp_path: Path):
