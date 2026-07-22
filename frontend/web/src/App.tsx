@@ -11,6 +11,9 @@ const CreatePage = lazy(() => import('./pages/CreatePage').then((module) => ({ d
 const RunPage = lazy(() => import('./pages/RunPage').then((module) => ({ default: module.RunPage })))
 const GalleryPage = lazy(() => import('./pages/GalleryPage').then((module) => ({ default: module.GalleryPage })))
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then((module) => ({ default: module.NotFoundPage })))
+const OfferPage = lazy(() => import('./pages/OfferPage').then((module) => ({ default: module.OfferPage })))
+const ContactsPage = lazy(() => import('./pages/ContactsPage').then((module) => ({ default: module.ContactsPage })))
+const PaymentPage = lazy(() => import('./pages/PaymentPage').then((module) => ({ default: module.PaymentPage })))
 
 export function App(): JSX.Element {
   const location = useLocation()
@@ -23,6 +26,9 @@ export function App(): JSX.Element {
             <Route path="/" element={<LandingPage />} />
             <Route path="/register" element={<AuthPage mode="register" />} />
             <Route path="/login" element={<AuthPage mode="login" />} />
+            <Route path="/offer" element={<OfferPage />} />
+            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/payment" element={<PaymentPage />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/create" element={<CreatePage />} />
               <Route path="/runs/:runId" element={<RunPage />} />

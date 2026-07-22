@@ -68,6 +68,52 @@ a {
   backdrop-filter: blur(24px);
 }
 
+.legal-prose {
+  line-height: 1.7;
+}
+
+.legal-prose h2 {
+  margin-top: 1.6rem;
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: #fff;
+}
+
+.legal-prose h2:first-child {
+  margin-top: 0;
+}
+
+.legal-prose p {
+  color: rgb(221 214 254 / 92%);
+}
+
+.legal-prose ul {
+  margin: 0.4rem 0 0.4rem 1.1rem;
+  list-style: disc;
+  color: rgb(221 214 254 / 92%);
+}
+
+.legal-prose li {
+  margin-top: 0.3rem;
+}
+
+.legal-prose a {
+  color: #fde68a;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.legal-prose dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.2rem;
+}
+
+.legal-prose dt {
+  font-weight: 700;
+  color: rgb(196 181 253 / 80%);
+}
+
 .magic-input {
   width: 100%;
   border: 1px solid rgb(255 255 255 / 11%);
