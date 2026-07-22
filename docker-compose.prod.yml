@@ -1,0 +1,119 @@
+# Продакшн-стек (self-contained, НЕ расширяет docker-compose.yml — тот для dev).
+# Отличия от dev: Caddy с авто-HTTPS раздаёт фронтенд и проксирует /api,/ws;
+# порты Postgres/Redis/API наружу не публикуются (доступ только внутри сети);
+# пароль БД и домен — из окружения; restart: unless-stopped.
+#
+# Запуск на сервере:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Обязательные переменные в .env (см. deploy/README.md):
+#   SITE_DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD + все TOONTALES_* секреты.
+
+x-app: &app
+  image: toontales-ai:prod
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  environment:
+    TOONTALES_DATABASE_URL: postgresql+asyncpg://toontales:${POSTGRES_PASSWORD}@postgres:5432/toontales
+    TOONTALES_REDIS_URL: redis://redis:6379/0
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: toontales
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: toontales
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toontales -d toontales"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["uvicorn", "toontales_ai.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # Порт наружу НЕ публикуется — доступ только через Caddy внутри compose-сети.
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "toontales_ai.workers.celery_app", "worker", "--pool=threads", "--concurrency=4", "--loglevel=info"]
+    # Метрики только на localhost сервера (для локального Prometheus), не наружу.
+    ports:
+      - "127.0.0.1:9101:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "toontales_ai.workers.celery_app", "beat", "--loglevel=info"]
+    ports:
+      - "127.0.0.1:9102:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: toontales-web:prod
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

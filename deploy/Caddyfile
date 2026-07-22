@@ -1,0 +1,24 @@
+# Продакшн reverse-proxy + авто-HTTPS (Let's Encrypt).
+# SITE_DOMAIN и ACME_EMAIL берутся из окружения (см. .env на сервере).
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	# API и WebSocket-прогресс — на FastAPI-контейнер. reverse_proxy сам
+	# обрабатывает WebSocket-upgrade, отдельная директива не нужна.
+	@backend path /api/* /ws/*
+	handle @backend {
+		reverse_proxy api:8000
+	}
+
+	# Всё остальное — статический SPA-фронтенд. try_files с фолбэком на index.html
+	# нужен для client-side роутинга (react-router): любой путь отдаёт index.html.
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
