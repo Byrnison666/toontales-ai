@@ -4,6 +4,11 @@
 	email {$ACME_EMAIL}
 }
 
+# www → апекс (301), чтобы работали оба варианта адреса.
+www.{$SITE_DOMAIN} {
+	redir https://{$SITE_DOMAIN}{uri} permanent
+}
+
 {$SITE_DOMAIN} {
 	encode zstd gzip
 
