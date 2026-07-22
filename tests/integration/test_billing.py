@@ -89,7 +89,7 @@ async def test_list_transactions_returns_newest_first(db_session):
 async def test_admin_topup_requires_correct_key(db_session, monkeypatch):
     from fastapi import HTTPException
 
-    from toontales_ai.api.v1.billing import _require_admin
+    from toontales_ai.api.deps import require_admin as _require_admin
 
     monkeypatch.setenv("TOONTALES_ADMIN_API_KEY", "secret-admin-key")
     settings_module.get_settings.cache_clear()
@@ -107,7 +107,7 @@ async def test_admin_topup_requires_correct_key(db_session, monkeypatch):
 async def test_admin_topup_rejected_when_admin_key_not_configured(db_session, monkeypatch):
     from fastapi import HTTPException
 
-    from toontales_ai.api.v1.billing import _require_admin
+    from toontales_ai.api.deps import require_admin as _require_admin
 
     # пустой admin_api_key в конфиге не должен открывать эндпоинт для любого значения
     monkeypatch.setenv("TOONTALES_ADMIN_API_KEY", "")

@@ -17,6 +17,7 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
+from toontales_ai.api.v1.admin import router as admin_router
 from toontales_ai.api.v1.auth import router as auth_router
 from toontales_ai.api.v1.billing import router as billing_router
 from toontales_ai.api.v1.runs import router as runs_router
@@ -25,6 +26,7 @@ from toontales_ai.api.v1.ws import router as ws_router
 settings = get_settings()
 app = FastAPI(title="ToonTales AI")
 
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(runs_router)

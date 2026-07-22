@@ -7,12 +7,11 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from toontales_ai.api.deps import get_current_user_id, get_db_session
-from toontales_ai.config.settings import get_settings
+from toontales_ai.api.deps import get_current_user_id, get_db_session, require_admin
 from toontales_ai.orchestration import billing
 
 router = APIRouter(prefix="/api/v1/billing")
@@ -46,15 +45,6 @@ class AdminTopupRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-def _require_admin(x_admin_key: str = Header(...)) -> None:
-    settings = get_settings()
-    # constant-time сравнение не критично: admin_api_key длинный и не подбирается
-    # по времени ответа так же, как пароль (нет user enumeration). Но пустой
-    # admin_api_key в конфиге не должен открывать эндпоинт для любого значения.
-    if not settings.admin_api_key or x_admin_key != settings.admin_api_key:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin access required")
-
-
 @router.get("/balance", response_model=BalanceResponse)
 async def get_balance(
     session: AsyncSession = Depends(get_db_session),
@@ -85,7 +75,7 @@ async def list_transactions(
     )
 
 
-@router.post("/admin/topup", response_model=BalanceResponse, dependencies=[Depends(_require_admin)])
+@router.post("/admin/topup", response_model=BalanceResponse, dependencies=[Depends(require_admin)])
 async def admin_topup(
     body: AdminTopupRequest,
     session: AsyncSession = Depends(get_db_session),
