@@ -25,7 +25,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from toontales_ai.api.deps import get_db_session
-from toontales_ai.domain.models import User
+from toontales_ai.config.settings import get_settings
+from toontales_ai.domain.enums import CreditTransactionType
+from toontales_ai.domain.models import CreditTransaction, User
 from toontales_ai.security.auth import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1/auth")
@@ -60,9 +62,24 @@ class AuthResponse(BaseModel):
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, session: AsyncSession = Depends(get_db_session)) -> AuthResponse:
     password_hash = await asyncio.to_thread(hash_password, body.password)
-    user = User(email=body.email, password_hash=password_hash, credit_balance=0)
+    bonus = get_settings().signup_bonus_credits
+    user = User(email=body.email, password_hash=password_hash, credit_balance=max(0, bonus))
     session.add(user)
     try:
+        await session.flush()
+        # Стартовый бонус фиксируем в append-only ledger (TOPUP) той же транзакцией,
+        # что и создание юзера — иначе баланс "с неба" без следа в истории.
+        if bonus > 0:
+            session.add(
+                CreditTransaction(
+                    user_id=user.id,
+                    run_id=None,
+                    task_id=None,
+                    type=CreditTransactionType.TOPUP,
+                    amount=bonus,
+                    idempotency_key=f"signup-bonus:{user.id}",
+                )
+            )
         await session.commit()
     except IntegrityError:
         # email UNIQUE — не подтверждаем существующему аккаунту факт занятости
