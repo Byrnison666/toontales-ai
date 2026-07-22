@@ -9,6 +9,23 @@ www.{$SITE_DOMAIN} {
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
 
+# Админ-панель на поддомене. Доступ к данным гейтит X-Admin-Key на стороне API
+# (require_admin); статический SPA публичен, но без ключа бесполезен.
+admin.{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	@backend path /api/*
+	handle @backend {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv/admin
+		try_files {path} /index.html
+		file_server
+	}
+}
+
 {$SITE_DOMAIN} {
 	encode zstd gzip
 
