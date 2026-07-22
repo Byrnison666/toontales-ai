@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
     runway_api_key: str = ""
+    # Модель image-to-video. gen4_turbo (5 кред/с = $0.05/с) вдвое дешевле gen4.5
+    # (10 кред/с = $0.10/с) при незначительной для детской анимации потере качества.
+    # ratio "720:1280" и integer duration поддерживаются обеими (Runway SDK
+    # image_to_video_create_params). При смене модели сверить RUNWAY_VIDEO_CREDITS_PER_SECOND
+    # в orchestration/real_cost.py — тариф модельно-зависимый.
+    runway_video_model: str = "gen4_turbo"
 
     sync_api_key: str = ""
     sync_model: str = "lipsync-2"

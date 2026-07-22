@@ -91,6 +91,7 @@ class RunwayAdapter:
         if not settings.runway_api_key:
             raise RunwayConfigError("TOONTALES_RUNWAY_API_KEY must be set to use RunwayAdapter")
         self._api_key = settings.runway_api_key
+        self._model = settings.runway_video_model
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -110,7 +111,7 @@ class RunwayAdapter:
             raise RunwayAPIError("empty motion prompt: nothing to describe for video generation")
 
         body = {
-            "model": "gen4.5",
+            "model": self._model,
             "promptImage": image_url,
             "promptText": prompt_text,
             "ratio": VERTICAL_RATIO,

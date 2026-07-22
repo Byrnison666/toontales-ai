@@ -113,12 +113,29 @@ async def test_submit_sends_expected_body_and_returns_queued(monkeypatch):
     assert submission.result is None
 
     body = _FakeAsyncClient.last_post_call["json"]
-    assert body["model"] == "gen4.5"
+    assert body["model"] == "gen4_turbo"  # дефолт settings.runway_video_model
     assert body["promptImage"] == "https://example.com/scene.png"
     assert body["ratio"] == runway_module.VERTICAL_RATIO
     assert "a fox in a forest" in body["promptText"]
     assert "slow pan left" in body["promptText"]
     assert _FakeAsyncClient.last_post_call["headers"]["Authorization"] == "Bearer key-1"
+
+
+async def test_submit_uses_model_from_settings(monkeypatch):
+    monkeypatch.setenv("TOONTALES_RUNWAY_VIDEO_MODEL", "gen4.5")
+    settings_module.get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data={"id": "task_9", "status": "PENDING"})
+
+    adapter = RunwayAdapter()
+    await adapter.submit(
+        StageInput(
+            task_id="t1", scene_id="s1",
+            payload={"source_image_url": "https://example.com/x.png", "image_prompt": "a fox"},
+        ),
+        idempotency_key="k",
+    )
+    assert _FakeAsyncClient.last_post_call["json"]["model"] == "gen4.5"
 
 
 async def test_submit_rejects_missing_source_image(monkeypatch):

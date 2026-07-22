@@ -8,10 +8,12 @@ from toontales_ai.domain.enums import Stage
 ANTHROPIC_INPUT_USD_PER_TOKEN = Decimal("1.00") / Decimal("1000000")
 ANTHROPIC_OUTPUT_USD_PER_TOKEN = Decimal("5.00") / Decimal("1000000")
 
-# Источник: Runway API pricing, gen4_image и gen4.5; WebSearch, сверено 2026-07-21.
+# Источник: Runway API pricing, gen4_image и gen4_turbo; docs.dev.runwayml.com,
+# сверено 2026-07-23. Video-тариф модельно-зависимый: gen4_turbo = 5 кред/с,
+# gen4.5 = 10 кред/с. Держать синхронно с settings.runway_video_model.
 RUNWAY_USD_PER_CREDIT = Decimal("0.01")
 RUNWAY_IMAGE_CREDITS_PER_IMAGE = Decimal("5")
-RUNWAY_VIDEO_CREDITS_PER_SECOND = Decimal("10")
+RUNWAY_VIDEO_CREDITS_PER_SECOND = Decimal("5")
 
 # Источник: ElevenLabs pricing, eleven_multilingual_v2; WebSearch, сверено 2026-07-21.
 ELEVENLABS_USD_PER_CHARACTER = Decimal("0.10") / Decimal("1000")

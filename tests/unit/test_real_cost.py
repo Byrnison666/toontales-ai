@@ -15,7 +15,7 @@ from toontales_ai.orchestration.real_cost import compute_real_cost_usd
             Decimal("0.002850"),
         ),
         (Stage.IMAGE, {"images": 3}, Decimal("0.150000")),
-        (Stage.VIDEO, {"duration_seconds": 5}, Decimal("0.500000")),
+        (Stage.VIDEO, {"duration_seconds": 5}, Decimal("0.250000")),  # gen4_turbo 5 кред/с
         (Stage.AUDIO, {"characters": 1234}, Decimal("0.123400")),
         (Stage.LIPSYNC, {"duration_seconds": "5.5"}, Decimal("0.247500")),
         (Stage.COMPOSITION, None, Decimal("0.000000")),
