@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { requisites } from '../lib/legal'
+import { paymentsLive, requisites } from '../lib/legal'
 
 export function AppFooter(): JSX.Element {
   return (
@@ -12,33 +12,40 @@ export function AppFooter(): JSX.Element {
             </span>
             <span aria-hidden="true">✦</span>
           </div>
-          <p className="text-sm leading-relaxed text-violet-300">
-            {requisites.taxStatus} · {requisites.fullName} · ИНН{' '}
-            <span className="font-semibold text-violet-100">{requisites.inn}</span>
-          </p>
-          <p className="text-sm text-violet-300">
-            {requisites.city} ·{' '}
-            <a href={`mailto:${requisites.email}`} className="transition-colors hover:text-amber-100">
-              {requisites.email}
-            </a>{' '}
-            ·{' '}
-            <a href={`tel:${requisites.phoneHref}`} className="transition-colors hover:text-amber-100">
-              {requisites.phone}
-            </a>
-          </p>
+          {/* Реквизиты самозанятого показываем только после запуска оплаты (см. legal.ts). */}
+          {paymentsLive && (
+            <>
+              <p className="text-sm leading-relaxed text-violet-300">
+                {requisites.taxStatus} · {requisites.fullName} · ИНН{' '}
+                <span className="font-semibold text-violet-100">{requisites.inn}</span>
+              </p>
+              <p className="text-sm text-violet-300">
+                {requisites.city} ·{' '}
+                <a href={`mailto:${requisites.email}`} className="transition-colors hover:text-amber-100">
+                  {requisites.email}
+                </a>{' '}
+                ·{' '}
+                <a href={`tel:${requisites.phoneHref}`} className="transition-colors hover:text-amber-100">
+                  {requisites.phone}
+                </a>
+              </p>
+            </>
+          )}
         </div>
 
-        <nav className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-violet-300 lg:justify-end">
-          <Link to="/offer" className="transition-colors hover:text-amber-100">
-            Публичная оферта
-          </Link>
-          <Link to="/payment" className="transition-colors hover:text-amber-100">
-            Оплата и получение
-          </Link>
-          <Link to="/contacts" className="transition-colors hover:text-amber-100">
-            Контакты
-          </Link>
-        </nav>
+        {paymentsLive && (
+          <nav className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-violet-300 lg:justify-end">
+            <Link to="/offer" className="transition-colors hover:text-amber-100">
+              Публичная оферта
+            </Link>
+            <Link to="/payment" className="transition-colors hover:text-amber-100">
+              Оплата и получение
+            </Link>
+            <Link to="/contacts" className="transition-colors hover:text-amber-100">
+              Контакты
+            </Link>
+          </nav>
+        )}
       </div>
       <div className="border-t border-white/5 py-4 text-center text-xs text-violet-400">
         © {new Date().getFullYear()} {requisites.brand}

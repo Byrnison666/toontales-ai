@@ -4,6 +4,7 @@ import { Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { MagicLoader } from './components/MagicLoader'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { paymentsLive } from './lib/legal'
 
 const LandingPage = lazy(() => import('./pages/LandingPage').then((module) => ({ default: module.LandingPage })))
 const AuthPage = lazy(() => import('./pages/AuthPage').then((module) => ({ default: module.AuthPage })))
@@ -26,9 +27,9 @@ export function App(): JSX.Element {
             <Route path="/" element={<LandingPage />} />
             <Route path="/register" element={<AuthPage mode="register" />} />
             <Route path="/login" element={<AuthPage mode="login" />} />
-            <Route path="/offer" element={<OfferPage />} />
-            <Route path="/contacts" element={<ContactsPage />} />
-            <Route path="/payment" element={<PaymentPage />} />
+            {paymentsLive && <Route path="/offer" element={<OfferPage />} />}
+            {paymentsLive && <Route path="/contacts" element={<ContactsPage />} />}
+            {paymentsLive && <Route path="/payment" element={<PaymentPage />} />}
             <Route element={<ProtectedRoute />}>
               <Route path="/create" element={<CreatePage />} />
               <Route path="/runs/:runId" element={<RunPage />} />
