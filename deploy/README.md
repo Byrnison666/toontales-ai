@@ -56,6 +56,22 @@ docker compose -f docker-compose.prod.yml up -d --build
 > Админ-панель (`frontend/admin`) в прод-стек пока не входит — деплой на
 > отдельный поддомен (`admin.домен`) добавляется отдельным шагом.
 
+### Бэкапы БД
+
+`deploy/scripts/toontales-backup.sh` делает `pg_dump` из контейнера postgres,
+gzip и кладёт копию **локально** (`/root/backups`, ротация 14 дней) и **офсайт в
+Cloudflare R2** (`<bucket>/db-backups/`, ротация 14 дней). R2-креды берёт из того
+же `.env` (`TOONTALES_S3_*`); нужен установленный `rclone`.
+
+Установка на сервере:
+```bash
+curl -fsSL https://rclone.org/install.sh | bash
+sudo cp deploy/scripts/toontales-backup.sh /usr/local/bin/ && sudo chmod +x /usr/local/bin/toontales-backup.sh
+/usr/local/bin/toontales-backup.sh          # разовый прогон/проверка
+# ежедневно в 03:30:
+( crontab -l 2>/dev/null; echo "30 3 * * * /usr/local/bin/toontales-backup.sh >> /root/backups/backup.log 2>&1" ) | crontab -
+```
+
 ## 1. Docker Compose (локальный dev-стек)
 
 Поднимает api + worker + beat + собственные PostgreSQL и Redis. Миграции
