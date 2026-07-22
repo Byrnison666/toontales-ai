@@ -60,7 +60,12 @@ services:
 
   worker:
     <<: *app
-    command: ["celery", "-A", "toontales_ai.workers.celery_app", "worker", "--loglevel=info"]
+    # --pool=threads: задачи I/O-bound (HTTP к провайдерам + polling, FFmpeg через
+    # subprocess). threads-пул исполняет задачи в MainProcess, поэтому
+    # Prometheus-инкременты из задач видны на metrics-сервере (9101 ниже);
+    # prefork-форки иначе потребовали бы PROMETHEUS_MULTIPROC_DIR-обвязки
+    # (консистентно с deploy/systemd/toontales-worker.service).
+    command: ["celery", "-A", "toontales_ai.workers.celery_app", "worker", "--pool=threads", "--concurrency=4", "--loglevel=info"]
     # TOONTALES_METRICS_PORT (settings.py) — worker/beat не имеют своего /metrics
     # эндпоинта как api (отдельный процесс, отдельный prometheus_client REGISTRY
     # в памяти) — вместо этого celery_app.py поднимает мини HTTP-сервер только
