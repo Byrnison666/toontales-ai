@@ -64,6 +64,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"
+    # Anthropic гео-блокирует РФ (403 "Request not allowed"). При деплое на
+    # российском VPS storyboard-вызовы роутятся через прокси вне РФ (http(s):// или
+    # socks5:// — для socks нужен httpx[socks]). Через Anthropic идёт только текст
+    # сюжета, не ПДн, поэтому прокси не нарушает локализацию 152-ФЗ. Пусто = прямое
+    # соединение (для окружений без гео-блока).
+    anthropic_proxy_url: str = ""
 
 
 @lru_cache

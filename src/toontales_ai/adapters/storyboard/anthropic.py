@@ -105,6 +105,8 @@ class AnthropicStoryboardAdapter:
             raise AnthropicConfigError("TOONTALES_ANTHROPIC_API_KEY must be set to use AnthropicStoryboardAdapter")
         self._api_key = settings.anthropic_api_key
         self._model = settings.anthropic_model
+        # Прокси вне РФ для обхода гео-блока Anthropic (см. settings.anthropic_proxy_url).
+        self._proxy = settings.anthropic_proxy_url or None
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -126,7 +128,7 @@ class AnthropicStoryboardAdapter:
             "output_config": {"format": {"type": "json_schema", "schema": STORYBOARD_SCHEMA}},
         }
 
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, proxy=self._proxy) as client:
             response = await client.post(f"{ANTHROPIC_BASE_URL}/messages", headers=self._headers(), json=body)
 
         _raise_for_status(response, context="Anthropic messages request failed")

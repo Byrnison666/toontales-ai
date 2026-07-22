@@ -45,9 +45,10 @@ class _FakeResponse:
 class _FakeAsyncClient:
     post_response: _FakeResponse
     last_post_call: dict | None = None
+    last_init_kwargs: dict | None = None
 
     def __init__(self, *args, **kwargs):
-        pass
+        type(self).last_init_kwargs = kwargs
 
     async def __aenter__(self):
         return self
@@ -110,6 +111,33 @@ async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
     assert "minItems" not in body["output_config"]["format"]["schema"]["properties"]["scenes"]
     assert "maxItems" not in body["output_config"]["format"]["schema"]["properties"]["scenes"]
     assert _FakeAsyncClient.last_post_call["headers"]["x-api-key"] == "key-1"
+
+
+async def test_proxy_passed_to_client_when_configured(monkeypatch):
+    monkeypatch.setenv("TOONTALES_ANTHROPIC_PROXY_URL", "http://proxy.example:3128")
+    settings_module.get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response([_sample_scene(), _sample_scene()]))
+
+    adapter = AnthropicStoryboardAdapter()
+    await adapter.submit(
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        idempotency_key="k",
+    )
+    assert _FakeAsyncClient.last_init_kwargs["proxy"] == "http://proxy.example:3128"
+
+
+async def test_no_proxy_when_unset(monkeypatch):
+    # TOONTALES_ANTHROPIC_PROXY_URL не задан -> proxy=None (прямое соединение).
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response([_sample_scene(), _sample_scene()]))
+
+    adapter = AnthropicStoryboardAdapter()
+    await adapter.submit(
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        idempotency_key="k",
+    )
+    assert _FakeAsyncClient.last_init_kwargs["proxy"] is None
 
 
 async def test_submit_rejects_empty_script_text(monkeypatch):
