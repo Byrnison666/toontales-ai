@@ -41,6 +41,9 @@ export function AppFooter(): JSX.Element {
             <Link to="/payment" className="transition-colors hover:text-amber-100">
               Оплата и получение
             </Link>
+            <Link to="/privacy" className="transition-colors hover:text-amber-100">
+              Конфиденциальность
+            </Link>
             <Link to="/contacts" className="transition-colors hover:text-amber-100">
               Контакты
             </Link>

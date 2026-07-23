@@ -15,6 +15,9 @@ const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then((module) => 
 const OfferPage = lazy(() => import('./pages/OfferPage').then((module) => ({ default: module.OfferPage })))
 const ContactsPage = lazy(() => import('./pages/ContactsPage').then((module) => ({ default: module.ContactsPage })))
 const PaymentPage = lazy(() => import('./pages/PaymentPage').then((module) => ({ default: module.PaymentPage })))
+const PrivacyPolicyPage = lazy(() =>
+  import('./pages/PrivacyPolicyPage').then((module) => ({ default: module.PrivacyPolicyPage })),
+)
 
 export function App(): JSX.Element {
   const location = useLocation()
@@ -29,6 +32,7 @@ export function App(): JSX.Element {
             <Route path="/login" element={<AuthPage mode="login" />} />
             {paymentsLive && <Route path="/offer" element={<OfferPage />} />}
             {paymentsLive && <Route path="/contacts" element={<ContactsPage />} />}
+            {paymentsLive && <Route path="/privacy" element={<PrivacyPolicyPage />} />}
             {paymentsLive && <Route path="/payment" element={<PaymentPage />} />}
             <Route element={<ProtectedRoute />}>
               <Route path="/create" element={<CreatePage />} />
