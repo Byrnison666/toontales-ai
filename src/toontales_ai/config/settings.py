@@ -1,6 +1,8 @@
 from decimal import Decimal
 from functools import lru_cache
 
+from pydantic import Field, field_validator
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,11 +57,10 @@ class Settings(BaseSettings):
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
     runway_api_key: str = ""
-    # Модель image-to-video. gen4_turbo (5 кред/с = $0.05/с) вдвое дешевле gen4.5
-    # (10 кред/с = $0.10/с) при незначительной для детской анимации потере качества.
-    # ratio "720:1280" и integer duration поддерживаются обеими (Runway SDK
-    # image_to_video_create_params). При смене модели сверить RUNWAY_VIDEO_CREDITS_PER_SECOND
-    # в orchestration/real_cost.py — тариф модельно-зависимый.
+    # Модель image-to-video — ТОЛЬКО gen4_turbo (5 кред/с = $0.05/с), см. валидатор
+    # _only_turbo ниже. Тариф захардкожен в real_cost.py и STAGE_COST_USD_MAX;
+    # gen4.5 (10 кред/с) при том же тарифе привёл бы к недосписанию вдвое, поэтому
+    # запрещён на уровне настроек, а не оставлен на дисциплину.
     runway_video_model: str = "gen4_turbo"
 
     # Lipsync-стадия (Sync.so). True (default) — говорящие губы, видео фикс-длины,
@@ -90,15 +91,36 @@ class Settings(BaseSettings):
     # затратам провайдерам (orchestration/real_cost.py), один в один, без наценки.
     # Наценка берётся один раз — в цене пакета искр (pricing.SPARK_PACKAGES).
     # Умножать на price_markup ещё и при списании нельзя: получится markup².
-    spark_cost_usd: Decimal = Decimal("0.001")
-    price_markup: Decimal = Decimal("3")
+    #
+    # gt=0 не косметика: spark_cost_usd=0 роняет settle делением на ноль уже
+    # ПОСЛЕ оплаченной нами генерации, отрицательное значение создаёт
+    # отрицательные холды и начисляет баланс при удержании. Отрицательный
+    # markup/курс/буфер дают нулевую или отрицательную цену пакета.
+    spark_cost_usd: Decimal = Field(default=Decimal("0.001"), gt=0)
+    price_markup: Decimal = Field(default=Decimal("3"), gt=0)
 
     # Себестоимость номинирована в USD, а пакеты продаются за рубли, поэтому
     # движение курса съедает маржу. Курс фиксируем и закладываем буфер на его
     # рост; пересматривать вместе с тарифами провайдеров (см. real_cost.py).
     # Источник: ЦБ РФ, 2026-07-24.
-    usd_rub_rate: Decimal = Decimal("78.4049")
-    usd_rub_buffer: Decimal = Decimal("0.15")
+    usd_rub_rate: Decimal = Field(default=Decimal("78.4049"), gt=0)
+    # ge=0: буфер может быть нулевым (продавать по курсу без запаса), но не
+    # отрицательным — иначе продаём дешевле курса.
+    usd_rub_buffer: Decimal = Field(default=Decimal("0.15"), ge=0)
+
+    @field_validator("runway_video_model")
+    @classmethod
+    def _only_turbo(cls, value: str) -> str:
+        # real_cost.py и STAGE_COST_USD_MAX жёстко считают тариф gen4_turbo
+        # (5 кредитов/с). gen4.5 стоит вдвое дороже — при нём мы системно
+        # недосписывали бы вдвое, и метрика клампа не сработала бы (обе локальные
+        # константы устарели одинаково). Видео только turbo — решение продукта.
+        if value != "gen4_turbo":
+            raise ValueError(
+                f"runway_video_model must be 'gen4_turbo' (got {value!r}): "
+                "real_cost/hold assume its tariff; gen4.5 would silently halve billing"
+            )
+        return value
 
 
 @lru_cache

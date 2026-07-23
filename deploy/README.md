@@ -56,6 +56,47 @@ docker compose -f docker-compose.prod.yml up -d --build
 > Админ-панель (`frontend/admin`) в прод-стек пока не входит — деплой на
 > отдельный поддомен (`admin.домен`) добавляется отдельным шагом.
 
+### Выкатка прайсинга v2 (миграция `0007_spark_revaluation`)
+
+Особый случай: миграция **необратимо пересчитывает балансы** пользователей под
+новую шкалу искр и **отказывается запускаться, пока в пайплайне есть
+незавершённые задачи** (незавершённая задача держит холд в старой шкале —
+пересчёт свободного баланса без холдов развёл бы деньги с ledger). Обычный
+`up -d --build` тут не годится: сервис `migrate` стартует, только `postgres`
+готов, а старые `worker`/`beat` в это время ещё живы и могут менять баланс.
+
+Порядок для перехода с прайсинга v1 на v2 (одноразовый, только на этой выкатке):
+
+```bash
+# 1. Бэкап и снимок «до»
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U toontales toontales | gzip > ~/backups/pre-pricing-v2-$(date +%F).sql.gz
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  psql -U toontales -d toontales -c "SELECT count(*) users, coalesce(sum(credit_balance),0) sparks FROM users"
+
+# 2. Остановить приём и обработку, дать пайплайну опустеть
+docker compose -f docker-compose.prod.yml stop worker beat
+# Дождаться, пока не останется незавершённых задач (должно вернуть 0):
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U toontales -d toontales -tc \
+  "SELECT count(*) FROM tasks WHERE status::text IN \
+   ('pending','submitting','waiting_provider','processing','retry_scheduled')"
+
+# 3. Обновить код и прогнать миграции (migrate дойдёт до 0007 и пересчитает балансы;
+#    если задачи ещё в полёте — упадёт с понятной ошибкой, это защита, а не сбой)
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 4. Проверка
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U toontales -d toontales \
+  -c "SELECT version_num FROM alembic_version" \
+  -c "SELECT coalesce(sum(credit_balance),0) FROM users"
+curl -s https://<домен>/api/v1/pricing/packages
+```
+
+Ожидаемо: версия `0008_credit_transaction_note`, сумма искр выросла в ~1.949
+раза (3275/1680), прайс отдаёт три пакета. Последующие выкатки — обычный
+`up -d --build`; drain нужен только для 0007.
+
 ### Бэкапы БД
 
 `deploy/scripts/toontales-backup.sh` делает `pg_dump` из контейнера postgres,

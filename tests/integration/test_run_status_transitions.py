@@ -27,7 +27,8 @@ def _seed_run_with_task(session, *, stage: Stage, cost: int = 10):
     session.flush()
 
     key = task_idempotency_key(run_id=run.id, stage=stage, scene_id=None, input_version="v1")
-    task = Task(run_id=run.id, stage=stage, provider="stub", input_hash=key, idempotency_key=key, cost=cost)
+    task = Task(run_id=run.id, stage=stage, provider="stub", status=TaskStatus.WAITING_PROVIDER,
+                input_hash=key, idempotency_key=key, cost=cost)
     session.add(task)
     session.commit()
     return user, run, task
@@ -56,6 +57,11 @@ def test_permanent_task_failure_marks_run_failed(db_session):
         db_session.refresh(task)
         if task.status == TaskStatus.FAILED:
             break
+        # complete_task применяет результат только к ждущей задаче; в проде между
+        # ретраями идёт переотправка в WAITING_PROVIDER — симулируем.
+        if task.status == TaskStatus.RETRY_SCHEDULED:
+            task.status = TaskStatus.WAITING_PROVIDER
+            db_session.commit()
         complete_task(db_session, task_id=task.id, result=failure)
 
     db_session.refresh(run)
@@ -72,6 +78,10 @@ def test_success_clears_stale_error_payload_from_prior_retries(db_session):
 
     db_session.refresh(task)
     assert task.error_payload is not None
+
+    # Переотправка после ретрая: задача снова ждёт результат провайдера.
+    task.status = TaskStatus.WAITING_PROVIDER
+    db_session.commit()
 
     success = ProviderJobResult(
         provider_job_id=None,

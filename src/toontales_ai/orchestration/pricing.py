@@ -41,8 +41,12 @@ STAGE_COST_USD_MAX: dict[Stage, Decimal] = {
     Stage.IMAGE: Decimal("0.05"),
     # gen4_turbo, MAX_DURATION_SECONDS=10 (adapters/video/runway.py).
     Stage.VIDEO: Decimal("0.50"),
-    # ElevenLabs, ~1000 символов озвучки на сцену.
-    Stage.AUDIO: Decimal("0.10"),
+    # ElevenLabs $0.0001/символ. Верхняя граница — весь лимит ввода (4000
+    # символов, schemas.GenerateProjectRequest) в одной сцене: раскадровка не
+    # гарантирует распределения текста по сценам, а maxLength в scene-схеме
+    # grammar-constrained decoding не поддерживает (adapters/storyboard/anthropic.py).
+    # Держать 4000 синхронно с лимитом script_text.
+    Stage.AUDIO: Decimal("0.40"),
     # Sync.so lipsync-2, те же 10 секунд, что у VIDEO.
     Stage.LIPSYNC: Decimal("0.45"),
     # ffmpeg на своих мощностях: real_cost.py возвращает 0, поэтому и цена 0.

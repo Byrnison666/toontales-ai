@@ -129,7 +129,11 @@ def _settle(session: Session, task: Task) -> None:
 
     refund = task.cost - task.price
     if refund > 0:
-        session.execute(
+        # Тот же контракт, что в _release: баланс двигаем только при реально
+        # вставленной проводке, иначе повторный settle начислил бы возврат дважды.
+        # complete_task держит задачу под FOR UPDATE, но RETURNING-гард дешёв и
+        # снимает зависимость корректности от блокировки выше по стеку.
+        inserted = session.execute(
             pg_insert(CreditTransaction)
             .values(
                 user_id=_run_user_id(session, task.run_id),
@@ -140,15 +144,22 @@ def _settle(session: Session, task: Task) -> None:
                 idempotency_key=credit_hold_refund_key(task.id),
             )
             .on_conflict_do_nothing(index_elements=["idempotency_key"])
-        )
-        user = session.execute(
-            select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()
-        ).scalar_one()
-        user.credit_balance += refund
+            .returning(CreditTransaction.id)
+        ).scalar_one_or_none()
+        if inserted is not None:
+            user = session.execute(
+                select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()
+            ).scalar_one()
+            user.credit_balance += refund
 
 
 def _release(session: Session, task: Task) -> None:
-    stmt = (
+    # Баланс поднимаем ТОЛЬКО если RELEASE-проводка реально вставилась (RETURNING).
+    # Без этой связки два reconciler-а, выбравшие одну задачу без FOR UPDATE,
+    # оба прибавили бы холд к балансу, хотя проводка вставится одна — прямое
+    # расхождение баланса с ledger. С RETURNING повторный release — no-op и для
+    # проводки, и для баланса, поэтому функция безопасна независимо от вызывающего.
+    inserted = session.execute(
         pg_insert(CreditTransaction)
         .values(
             user_id=_run_user_id(session, task.run_id),
@@ -159,8 +170,10 @@ def _release(session: Session, task: Task) -> None:
             idempotency_key=credit_release_key(task.id),
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
-    )
-    session.execute(stmt)
+        .returning(CreditTransaction.id)
+    ).scalar_one_or_none()
+    if inserted is None:
+        return
     user = session.execute(select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()).scalar_one()
     user.credit_balance += task.cost
 
@@ -369,6 +382,25 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
 
     if task.status in TERMINAL_STATUSES:
         return  # already resolved — второй из poll/webhook гонки становится no-op
+
+    # Результат применяем только к задаче, которая его ЖДЁТ. complete_task
+    # легитимно вызывается из двух мест: async-poll (задача WAITING_PROVIDER) и
+    # синхронный submit / обёртка провала submit (задача SUBMITTING). Дубликат
+    # FAILED-колбэка, пришедший когда задача уже RETRY_SCHEDULED (между провалом и
+    # переотправкой) или PENDING, иначе снова инкрементировал бы retry_count —
+    # at-least-once доставка исчерпала бы все попытки одним старым результатом.
+    if task.status not in (TaskStatus.WAITING_PROVIDER, TaskStatus.SUBMITTING):
+        return
+
+    # Результат от ПРЕДЫДУЩЕЙ провайдерской попытки не должен применяться к новой:
+    # после переотправки provider_job_id уже другой. Ловит webhook/poll со старым
+    # job id, доставленный после ретрая. None у обоих — синхронный путь без job id.
+    if (
+        result.provider_job_id is not None
+        and task.provider_job_id is not None
+        and result.provider_job_id != task.provider_job_id
+    ):
+        return
 
     # Стадия требует хотя бы одного валидного MediaAsset (storyboard — исключение,
     # её результат структурные данные scenes, а не файл в object storage).

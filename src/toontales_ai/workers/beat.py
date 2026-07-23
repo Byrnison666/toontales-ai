@@ -63,28 +63,44 @@ def reconcile_stale_tasks() -> None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     with SyncSessionLocal() as session:
+        # FOR UPDATE обязателен: без блокировки reconciler мог прочитать задачу,
+        # параллельный complete_task успел бы её завершить и settle-нуть, а затем
+        # reconciler перезаписал бы статус в FAILED и вернул полный холд поверх
+        # частичного возврата. Под блокировкой Postgres перечитывает WHERE, и уже
+        # завершённая задача в выборку не попадает. skip_locked — чтобы beat не
+        # блокировался на задаче, которую прямо сейчас завершает воркер (реально
+        # застрявшая в SUBMITTING никем не залочена, так что не пропускается).
+        #
+        # Граница MAX_TASK_AGE считается в SQL, а не в Python: round-trip'нутый из
+        # БД created_at может съехать на TimeZone сессии относительно aware/naive
+        # UTC now (см. развёрнутый комментарий выше) — Python-side вычитание тут
+        # флакует, поэтому две выборки с SQL-арифметикой вместо одной.
         stuck_submitting_recoverable = session.execute(
-            select(Task.id).where(
+            select(Task)
+            .where(
                 Task.status == TaskStatus.SUBMITTING,
                 Task.created_at < now - STUCK_SUBMITTING_TIMEOUT,
                 Task.created_at >= now - MAX_TASK_AGE,
             )
+            .with_for_update(skip_locked=True)
         ).scalars().all()
         stuck_submitting_expired = session.execute(
-            select(Task).where(
+            select(Task)
+            .where(
                 Task.status == TaskStatus.SUBMITTING,
                 Task.created_at < now - STUCK_SUBMITTING_TIMEOUT,
                 Task.created_at < now - MAX_TASK_AGE,
             )
+            .with_for_update(skip_locked=True)
         ).scalars().all()
         for task in stuck_submitting_expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "stuck in SUBMITTING past max task age"}
             _release(session, task)
-        for task_id in stuck_submitting_recoverable:
-            session.get(Task, task_id).status = TaskStatus.PENDING
+        for task in stuck_submitting_recoverable:
+            task.status = TaskStatus.PENDING
         session.commit()
-        to_resubmit = list(stuck_submitting_recoverable)
+        to_resubmit = [task.id for task in stuck_submitting_recoverable]
 
     for task_id in to_resubmit:
         process_task.apply_async(args=[str(task_id)])
@@ -93,28 +109,35 @@ def reconcile_stale_tasks() -> None:
         metrics.RECONCILED_TASKS_TOTAL.labels(reconciliation_type="stuck_submitting").inc(len(to_resubmit))
 
     with SyncSessionLocal() as session:
+        # FOR UPDATE — по той же причине, что и выше: не дать reconciler-у затереть
+        # статус задачи, которую параллельно завершает complete_task. Граница
+        # MAX_TASK_AGE снова в SQL из-за таймзонного съезда created_at.
         orphaned_pending_recoverable = session.execute(
-            select(Task.id).where(
+            select(Task)
+            .where(
                 Task.status == TaskStatus.PENDING,
                 Task.attempt_no > 0,
                 Task.created_at < now - ORPHANED_PENDING_GRACE,
                 Task.created_at >= now - MAX_TASK_AGE,
             )
+            .with_for_update(skip_locked=True)
         ).scalars().all()
         orphaned_pending_expired = session.execute(
-            select(Task).where(
+            select(Task)
+            .where(
                 Task.status == TaskStatus.PENDING,
                 Task.attempt_no > 0,
                 Task.created_at < now - ORPHANED_PENDING_GRACE,
                 Task.created_at < now - MAX_TASK_AGE,
             )
+            .with_for_update(skip_locked=True)
         ).scalars().all()
         for task in orphaned_pending_expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "orphaned in PENDING past max task age"}
             _release(session, task)
         session.commit()
-        orphaned_ids = list(orphaned_pending_recoverable)
+        orphaned_ids = [task.id for task in orphaned_pending_recoverable]
 
     for task_id in orphaned_ids:
         process_task.apply_async(args=[str(task_id)])
@@ -132,10 +155,14 @@ def reconcile_stale_tasks() -> None:
         stale_ids = [t.id for t in stale_waiting]
 
         expired = session.execute(
-            select(Task).where(
+            select(Task)
+            .where(
                 Task.status.in_([TaskStatus.WAITING_PROVIDER, TaskStatus.PROCESSING]),
                 Task.created_at < now - MAX_TASK_AGE,
             )
+            # FOR UPDATE: эта ветка помечает FAILED и возвращает холд — её нельзя
+            # выполнять на задаче, которую параллельно завершает complete_task.
+            .with_for_update(skip_locked=True)
         ).scalars().all()
         # (task_id, stage) для освобождения provider-семафора ПОСЛЕ commit —
         # reconcile помечает FAILED в обход complete_task/tasks.py, где обычно

@@ -121,21 +121,18 @@ async def test_submit_sends_expected_body_and_returns_queued(monkeypatch):
     assert _FakeAsyncClient.last_post_call["headers"]["Authorization"] == "Bearer key-1"
 
 
-async def test_submit_uses_model_from_settings(monkeypatch):
+async def test_unsupported_video_model_rejected_at_settings_load(monkeypatch):
+    # Раньше адаптер брал любую модель из настроек; теперь тариф захардкожен под
+    # gen4_turbo, а gen4.5 стоил бы вдвое дороже -> недосписание. Модель заперта на
+    # уровне настроек (settings._only_turbo), поэтому до адаптера gen4.5 не доходит.
+    import pytest
+    from pydantic import ValidationError
+
     monkeypatch.setenv("TOONTALES_RUNWAY_VIDEO_MODEL", "gen4.5")
     settings_module.get_settings.cache_clear()
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    _FakeAsyncClient.post_response = _FakeResponse(200, json_data={"id": "task_9", "status": "PENDING"})
-
-    adapter = RunwayAdapter()
-    await adapter.submit(
-        StageInput(
-            task_id="t1", scene_id="s1",
-            payload={"source_image_url": "https://example.com/x.png", "image_prompt": "a fox"},
-        ),
-        idempotency_key="k",
-    )
-    assert _FakeAsyncClient.last_post_call["json"]["model"] == "gen4.5"
+    with pytest.raises(ValidationError):
+        settings_module.get_settings()
+    settings_module.get_settings.cache_clear()
 
 
 @pytest.mark.parametrize(

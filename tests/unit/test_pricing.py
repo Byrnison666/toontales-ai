@@ -121,3 +121,14 @@ def test_voiceover_mode_drops_lipsync_from_hold(monkeypatch):
     settings_module.get_settings.cache_clear()
     with_lipsync = estimate_run_cost(6)
     assert with_lipsync - without_lipsync == 6 * stage_hold(Stage.LIPSYNC)
+
+
+def test_audio_hold_covers_full_input_in_one_scene():
+    """Верхняя граница AUDIO должна покрывать весь лимит ввода (4000 символов) в
+    одной сцене: раскадровка не гарантирует распределения текста по сценам."""
+    from toontales_ai.orchestration import real_cost
+
+    # весь лимит script_text (schemas.GenerateProjectRequest.max_length) в одной сцене
+    worst_case = real_cost.compute_real_cost_usd(Stage.AUDIO, {"characters": 4000})
+    assert worst_case is not None
+    assert worst_case <= STAGE_COST_USD_MAX[Stage.AUDIO], "AUDIO hold ниже худшего случая"

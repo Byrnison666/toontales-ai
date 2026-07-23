@@ -5,7 +5,7 @@
 import uuid
 
 from toontales_ai.adapters.base import ProviderJobResult
-from toontales_ai.domain.enums import CreditTransactionType, ProviderJobStatus, Stage
+from toontales_ai.domain.enums import CreditTransactionType, ProviderJobStatus, Stage, TaskStatus
 from toontales_ai.domain.models import CreditTransaction, GenerationRun, Project, Task, User
 from toontales_ai.orchestration.idempotency import task_idempotency_key
 from toontales_ai.orchestration.pipeline_sync import complete_task
@@ -25,7 +25,8 @@ def _seed_task(session, *, stage: Stage, balance: int = 100_000):
 
     hold = stage_hold(stage)
     key = task_idempotency_key(run_id=run.id, stage=stage, scene_id=None, input_version="v1")
-    task = Task(run_id=run.id, stage=stage, provider="stub", input_hash=key, idempotency_key=key, cost=hold)
+    task = Task(run_id=run.id, stage=stage, provider="stub", status=TaskStatus.WAITING_PROVIDER,
+                input_hash=key, idempotency_key=key, cost=hold)
     session.add(task)
     # Холд уже списан с баланса на этапе _hold_and_enqueue — воспроизводим это,
     # иначе возврат остатка проверялся бы от неправильной базы.

@@ -130,6 +130,10 @@ async def test_partial_rerun_of_storyboard_preserves_script_and_avoids_scene_ind
 
     new_storyboard_task = db_session.query(Task).filter_by(run_id=new_run.id, stage=Stage.STORYBOARD).one()
     assert new_storyboard_task.input_snapshot == {"script_text": "original creative script"}
+    # Переводим в состояние, из которого complete_task вызывается в проде: задача
+    # создаётся PENDING, а результат приходит уже из WAITING_PROVIDER.
+    new_storyboard_task.status = TaskStatus.WAITING_PROVIDER
+    db_session.commit()
 
     result = ProviderJobResult(
         provider_job_id=None,

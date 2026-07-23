@@ -23,7 +23,10 @@ def _seed_run_with_pending_task(session, *, stage: Stage = Stage.IMAGE, cost: in
     session.flush()
 
     key = task_idempotency_key(run_id=run.id, stage=stage, scene_id=None, input_version="v1")
-    task = Task(run_id=run.id, stage=stage, provider="stub", input_hash=key, idempotency_key=key, cost=cost)
+    # WAITING_PROVIDER, а не PENDING: complete_task в проде вызывается только
+    # когда задача ждёт результат провайдера (см. гард по статусу в pipeline_sync).
+    task = Task(run_id=run.id, stage=stage, provider="stub", status=TaskStatus.WAITING_PROVIDER,
+                input_hash=key, idempotency_key=key, cost=cost)
     session.add(task)
     session.commit()
     return user, run, task
@@ -60,6 +63,12 @@ def test_failed_task_releases_hold_after_max_retries(db_session):
         db_session.refresh(task)
         if task.status == TaskStatus.FAILED:
             break
+        # В проде между провалами задача переотправляется (RETRY_SCHEDULED ->
+        # ... -> WAITING_PROVIDER с новым job id). complete_task применяет
+        # результат только к ждущей задаче, поэтому симулируем переотправку.
+        if task.status == TaskStatus.RETRY_SCHEDULED:
+            task.status = TaskStatus.WAITING_PROVIDER
+            db_session.commit()
         complete_task(db_session, task_id=task.id, result=failure)
 
     db_session.refresh(task)
@@ -107,6 +116,12 @@ def test_hold_and_enqueue_actually_deducts_balance(db_session):
         task = db_session.get(Task, task_id)
         if task.status == TaskStatus.FAILED:
             break
+        # complete_task применяет результат только к ждущей задаче: задача создана
+        # PENDING, а в проде провал приходит из WAITING_PROVIDER (после submit),
+        # и между ретраями идёт переотправка. Симулируем это.
+        if task.status in (TaskStatus.PENDING, TaskStatus.RETRY_SCHEDULED):
+            task.status = TaskStatus.WAITING_PROVIDER
+            db_session.commit()
         complete_task(db_session, task_id=task_id, result=failure)
 
     db_session.refresh(user)
