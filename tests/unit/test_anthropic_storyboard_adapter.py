@@ -62,8 +62,9 @@ class _FakeAsyncClient:
 
 
 def _messages_response(scenes: list[dict]) -> dict:
+    payload = dict(zip(anthropic_module.SCENE_KEYS, scenes, strict=False))
     return {
-        "content": [{"type": "text", "text": json.dumps({"scenes": scenes})}],
+        "content": [{"type": "text", "text": json.dumps(payload)}],
         "usage": {"input_tokens": 120, "output_tokens": 340},
     }
 
@@ -105,11 +106,14 @@ async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
     assert body["model"] == "claude-haiku-4-5-20251001"
     assert body["messages"] == [{"role": "user", "content": "A fox explores a magical forest."}]
     assert body["output_config"]["format"]["type"] == "json_schema"
-    # minItems/maxItems > 1 не поддерживаются grammar-constrained decoding у Anthropic
-    # (живой 400: "'minItems' values other than 0 or 1 are not supported") — диапазон
-    # MIN_SCENES..MAX_SCENES задаётся только текстом в SYSTEM_PROMPT.
-    assert "minItems" not in body["output_config"]["format"]["schema"]["properties"]["scenes"]
-    assert "maxItems" not in body["output_config"]["format"]["schema"]["properties"]["scenes"]
+    # Диапазон MIN_SCENES..MAX_SCENES закодирован структурой схемы, а не текстом промпта:
+    # ключей ровно MAX_SCENES + additionalProperties=False -> больше физически не выдать,
+    # required первых MIN_SCENES -> меньше тоже.
+    schema = body["output_config"]["format"]["schema"]
+    assert list(schema["properties"]) == list(anthropic_module.SCENE_KEYS)
+    assert len(schema["properties"]) == anthropic_module.MAX_SCENES
+    assert schema["required"] == list(anthropic_module.SCENE_KEYS[: anthropic_module.MIN_SCENES])
+    assert schema["additionalProperties"] is False
     assert _FakeAsyncClient.last_post_call["headers"]["x-api-key"] == "key-1"
 
 
@@ -180,7 +184,7 @@ async def test_submit_rejects_response_without_scenes(monkeypatch):
     _FakeAsyncClient.post_response = _FakeResponse(
         200,
         json_data={
-            "content": [{"type": "text", "text": json.dumps({"scenes": []})}],
+            "content": [{"type": "text", "text": json.dumps({})}],
             "usage": {"input_tokens": 120, "output_tokens": 10},
         },
     )
@@ -193,10 +197,10 @@ async def test_submit_rejects_response_without_scenes(monkeypatch):
         )
 
 
-async def test_submit_rejects_too_many_scenes(monkeypatch):
+async def test_submit_rejects_too_few_scenes(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    too_many = [_sample_scene() for _ in range(anthropic_module.MAX_SCENES + 1)]
-    _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response(too_many))
+    too_few = [_sample_scene() for _ in range(anthropic_module.MIN_SCENES - 1)]
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response(too_few))
 
     adapter = AnthropicStoryboardAdapter()
     with pytest.raises(AnthropicAPIError):
@@ -204,6 +208,29 @@ async def test_submit_rejects_too_many_scenes(monkeypatch):
             StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
             idempotency_key="k",
         )
+
+
+async def test_submit_collects_sparse_scene_keys_in_order(monkeypatch):
+    # Схема не обязывает заполнять ключи подряд — пропуск в середине не должен ломать разбор.
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    first = _sample_scene()
+    third = _sample_scene() | {"script_text": "The fox reaches the clearing."}
+    _FakeAsyncClient.post_response = _FakeResponse(
+        200,
+        json_data={
+            "content": [{"type": "text", "text": json.dumps({"scene_3": third, "scene_1": first})}],
+            "usage": {"input_tokens": 120, "output_tokens": 40},
+        },
+    )
+
+    adapter = AnthropicStoryboardAdapter()
+    submission = await adapter.submit(
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        idempotency_key="k",
+    )
+
+    assert submission.result is not None
+    assert submission.result.artifacts[0]["scenes"] == [first, third]
 
 
 async def test_submit_rejects_invalid_json_text(monkeypatch):

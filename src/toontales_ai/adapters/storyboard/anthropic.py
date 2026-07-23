@@ -45,26 +45,32 @@ SCENE_SCHEMA = {
     "additionalProperties": False,
 }
 
+SCENE_KEYS = tuple(f"scene_{index}" for index in range(1, MAX_SCENES + 1))
+
+# minItems/maxItems > 1 не поддерживаются grammar-constrained decoding
+# ("'minItems' values other than 0 or 1 are not supported" — живой 400 от API), а
+# текстовое ограничение в SYSTEM_PROMPT haiku нарушает (живой ответ на 10 сцен).
+# Поэтому вместо массива — объект с фиксированными ключами: additionalProperties=False
+# делает MAX_SCENES недостижимым структурно, required даёт MIN_SCENES.
 STORYBOARD_SCHEMA = {
     "type": "object",
-    "properties": {
-        # minItems/maxItems > 1 не поддерживаются grammar-constrained decoding
-        # ("'minItems' values other than 0 or 1 are not supported" — живой 400 от
-        # API). Диапазон MIN_SCENES..MAX_SCENES задаётся текстом в SYSTEM_PROMPT
-        # и проверяется программно в submit() после разбора ответа.
-        "scenes": {"type": "array", "items": SCENE_SCHEMA},
-    },
-    "required": ["scenes"],
+    # $ref вместо MAX_SCENES копий SCENE_SCHEMA: без него схема стоит ~3.4k лишних
+    # input-токенов на каждый вызов.
+    "$defs": {"scene": SCENE_SCHEMA},
+    "properties": {key: {"$ref": "#/$defs/scene"} for key in SCENE_KEYS},
+    "required": list(SCENE_KEYS[:MIN_SCENES]),
     "additionalProperties": False,
 }
 
 SYSTEM_PROMPT = (
     "Ты сценарист коротких анимированных роликов. По сюжету пользователя составь "
     "раскадровку из {min_scenes}-{max_scenes} сцен для 20-30-секундного вертикального "
-    "(9:16) ролика. Для каждой сцены дай: script_text (короткая реплика или закадровый "
-    "текст на том же языке, что и исходный сюжет), image_prompt (детальное описание кадра "
-    "на английском для text-to-image модели), camera_movement (короткое описание движения "
-    "камеры на английском) и mood_notes (тон/настроение сцены на английском)."
+    "(9:16) ролика. Заполняй ключи scene_1, scene_2, ... подряд, без пропусков, и "
+    "останавливайся, когда сюжет рассказан целиком. Для каждой сцены дай: script_text "
+    "(короткая реплика или закадровый текст на том же языке, что и исходный сюжет), "
+    "image_prompt (детальное описание кадра на английском для text-to-image модели), "
+    "camera_movement (короткое описание движения камеры на английском) и mood_notes "
+    "(тон/настроение сцены на английском)."
 ).format(min_scenes=MIN_SCENES, max_scenes=MAX_SCENES)
 
 
@@ -144,12 +150,12 @@ class AnthropicStoryboardAdapter:
         except json.JSONDecodeError as exc:
             raise AnthropicAPIError(f"Anthropic structured output is not valid JSON: {exc}") from exc
 
-        scenes = parsed.get("scenes")
-        if not scenes:
-            raise AnthropicAPIError(f"Anthropic response has no scenes: {parsed}")
-        if not (MIN_SCENES <= len(scenes) <= MAX_SCENES):
+        # Объект scene_1..scene_N -> упорядоченный список. Пропущенные ключи просто
+        # не попадают в список: модель может остановиться раньше MAX_SCENES.
+        scenes = [parsed[key] for key in SCENE_KEYS if key in parsed]
+        if len(scenes) < MIN_SCENES:
             raise AnthropicAPIError(
-                f"Anthropic returned {len(scenes)} scenes, expected {MIN_SCENES}-{MAX_SCENES}"
+                f"Anthropic returned {len(scenes)} scenes, expected at least {MIN_SCENES}"
             )
 
         result = ProviderJobResult(
