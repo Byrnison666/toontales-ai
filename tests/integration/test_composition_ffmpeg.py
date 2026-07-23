@@ -96,7 +96,7 @@ def test_voiceover_scene_length_matches_audio_freezing_short_video(tmp_path: Pat
 
     output_path = tmp_path / "final.mp4"
     compose_scenes(
-        [SceneClip(video_path=video, audio_path=audio, audio_duration=2.5)],
+        [SceneClip(video_path=video, audio_path=audio, scene_duration=2.5)],
         output_path=output_path,
     )
     assert output_path.exists()
@@ -113,20 +113,20 @@ def test_voiceover_trims_video_longer_than_audio(tmp_path: Path):
 
     output_path = tmp_path / "final.mp4"
     compose_scenes(
-        [SceneClip(video_path=video, audio_path=audio, audio_duration=1.5)],
+        [SceneClip(video_path=video, audio_path=audio, scene_duration=1.5)],
         output_path=output_path,
     )
     assert 1.3 < _ffprobe_duration(output_path) < 1.8
 
 
-def test_voiceover_requires_audio_duration(tmp_path: Path):
+def test_voiceover_requires_scene_duration(tmp_path: Path):
     video = tmp_path / "scene_0.mp4"
     audio = tmp_path / "scene_0.mp3"
     _make_silent_clip(video, duration=1.0, color="green")
     _make_audio(audio, duration=1.0)
     with pytest.raises(CompositionError):
         compose_scenes(
-            [SceneClip(video_path=video, audio_path=audio, audio_duration=None)],
+            [SceneClip(video_path=video, audio_path=audio, scene_duration=None)],
             output_path=tmp_path / "out.mp4",
         )
 

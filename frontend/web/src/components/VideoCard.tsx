@@ -81,7 +81,7 @@ export function VideoCard({ run, snapshot, unavailable = false }: VideoCardProps
             <time dateTime={run.created_at}>
               {formatDate(run.created_at)}
             </time>
-            <span className="font-bold text-amber-100">{unavailable ? 'Недоступен' : formatPrice(snapshot?.total_price)}</span>
+            <span className="font-bold text-amber-100">{unavailable ? 'Недоступен' : formatPrice(snapshot?.price)}</span>
           </div>
         </div>
       </Link>

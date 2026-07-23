@@ -24,9 +24,14 @@ export function CreatePage(): JSX.Element {
   const [scriptText, setScriptText] = useState('')
   const [balance, setBalance] = useState<number | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(true)
-  const [maxHold, setMaxHold] = useState<number | null>(null)
+  // Прайсинг v3: цена детерминирована выбранной длительностью. Пресеты + точная
+  // цена под выбором, резерва нет.
+  const [durationSeconds, setDurationSeconds] = useState(30)
+  const [prices, setPrices] = useState<Map<number, number>>(new Map())
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const price = prices.get(durationSeconds) ?? null
 
   // Баланс загружен и равен нулю — пополнение только вручную (стартовый бонус
   // выключен до платёжной системы), поэтому запуск блокируем с понятным текстом,
@@ -35,14 +40,21 @@ export function CreatePage(): JSX.Element {
 
   useEffect(() => {
     let active = true
-    // Резерв не блокирует запуск и не должен ронять форму, если запрос не прошёл:
-    // без него просто не покажем точную цифру.
+    // Цена по выбранной длительности (пресеты + своя). Не блокирует форму, если
+    // не загрузилась — просто не покажем цифру.
     void api
-      .getPricingQuote()
+      .getPricingQuote(durationSeconds)
       .then((quote) => {
-        if (active) setMaxHold(quote.max_hold)
+        if (active) setPrices(new Map(quote.prices.map((p) => [p.duration_seconds, p.price])))
       })
       .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [durationSeconds])
+
+  useEffect(() => {
+    let active = true
     void api
       .getBalance()
       .then((response) => {
@@ -67,6 +79,7 @@ export function CreatePage(): JSX.Element {
       const response = await api.generateProject({
         project_name: projectName.trim(),
         script_text: scriptText.trim(),
+        duration_seconds: durationSeconds,
       })
       rememberRun({
         run_id: response.run_id,
@@ -144,6 +157,49 @@ export function CreatePage(): JSX.Element {
             </motion.span>
           </div>
 
+          <div className="mt-6">
+            <span className="mb-2 block font-extrabold text-violet-100">Длительность ролика</span>
+            <div className="flex flex-wrap gap-2">
+              {[10, 30, 60].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setDurationSeconds(preset)}
+                  className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition ${
+                    durationSeconds === preset
+                      ? 'border-cyan-300/60 bg-cyan-300/15 text-cyan-100'
+                      : 'border-white/10 text-violet-200 hover:bg-white/5'
+                  }`}
+                >
+                  {preset} сек
+                  {prices.has(preset) && (
+                    <span className="ml-2 text-xs text-amber-200/80">{prices.get(preset)!.toLocaleString('ru-RU')} ✦</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <label className="mt-3 flex items-center gap-3 text-sm text-violet-300">
+              <span>Своя (5–90 сек):</span>
+              <input
+                type="number"
+                min={5}
+                max={90}
+                value={durationSeconds}
+                onChange={(event) => {
+                  const v = Number(event.target.value)
+                  if (Number.isFinite(v)) setDurationSeconds(Math.max(5, Math.min(90, Math.round(v))))
+                }}
+                className="magic-input w-24 py-2 text-center"
+              />
+            </label>
+            <p className="mt-3 text-sm font-semibold text-amber-100">
+              {price === null ? 'Считаем цену…' : `Цена: ${price.toLocaleString('ru-RU')} ✦`}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-violet-300">
+              Точная цена, без резерва. Спишется только после готового ролика.
+            </p>
+          </div>
+
           {noBalance && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
@@ -202,13 +258,13 @@ export function CreatePage(): JSX.Element {
             )}
             <div className="my-4 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
             <p className="text-sm font-semibold text-amber-100">
-              {maxHold === null
-                ? 'Резервируем часть баланса на время создания'
-                : `Резервируем до ${maxHold.toLocaleString('ru-RU')} ✦`}
+              {price === null
+                ? 'Цена появится после выбора длительности'
+                : `Ролик на ${durationSeconds} сек — ${price.toLocaleString('ru-RU')} ✦`}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-violet-300">
-              Это не цена, а запас на самый длинный ролик. Спишем только за то, что реально
-              получилось, остальное сразу вернём на баланс.
+              Точная цена, без резерва. Баланс не трогаем на старте — спишем ровно эту
+              сумму, только когда ролик будет готов.
             </p>
           </section>
           <section className="rounded-3xl border border-cyan-300/15 bg-cyan-300/[0.055] p-5">

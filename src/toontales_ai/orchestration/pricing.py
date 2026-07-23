@@ -1,75 +1,107 @@
-"""Прайсинг: себестоимость в USD, баланс и списания в искрах, наценка в пакетах.
+"""Прайсинг: цена ролика детерминирована из выбранной длительности.
 
-Искра — единица СЕБЕСТОИМОСТИ: 1 искра = settings.spark_cost_usd затрат
-провайдерам. Списание идёт один в один по затратам, БЕЗ наценки. Наценка берётся
-ровно один раз — в цене пакета искр (SPARK_PACKAGES): пакет продаётся за
-price_markup × свою себестоимость. Отсюда инвариант: сколько бы искр клиент ни
-потратил, он заплатил за них втрое больше, чем они стоили нам.
+Модель (v3, посекундная — без резерва):
+* Пользователь выбирает длительность D секунд. Цена = price_from_duration(D),
+  известна ДО старта и показывается клиенту.
+* На старте баланс НЕ трогается (ни резерва, ни списания) — только проверка,
+  что средств хватает (start_run, с учётом активных запусков).
+* Работа идёт до конца без обрыва. Списание одно, на успешной COMPOSITION,
+  ровно price_from_duration(D) — независимо от фактической себестоимости. Если
+  сцене нужно чуть больше секунд, чтобы закончиться — перерасход наш.
+* Провал → не списываем ничего.
 
-Наценка при списании И при продаже дала бы markup² — поэтому price_sparks
-намеренно не умножает ни на что.
+Искра — единица СЕБЕСТОИМОСТИ (1 искра = settings.spark_cost_usd). Списание идёт
+по себестоимости, БЕЗ наценки: наценка ×price_markup берётся один раз в цене
+пакета искр (package_price_rub). Умножать наценку и при списании нельзя — markov².
 
-Клиент никогда не видит себестоимость в деньгах — только искры (клиентские схемы
-в api/v1/schemas.py); USD остаётся в админской выдаче (api/v1/admin.py).
-
-Две величины, которые легко перепутать:
-
-* ХОЛД (stage_hold) — верхняя граница стоимости стадии, блокируется на балансе ДО
-  запуска. Считается из STAGE_COST_USD_MAX — худшего случая по каждому провайдеру.
-* СПИСАНИЕ (price_sparks) — по факту, из Task.real_cost_usd после завершения
-  стадии. Разница возвращается на баланс (pipeline_sync._settle).
-
-Такая схема держит наценку при любой длине сцены: смета с фиксированными
-допущениями (5 с видео) давала бы ×1.5 на десятисекундной сцене.
+Себестоимость/сек берётся из тех же тарифов, что real_cost.py — держать синхронно.
 """
 
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
-from toontales_ai.domain.enums import Stage
+from toontales_ai.orchestration import real_cost
 
-PRICING_VERSION = "v2"
+PRICING_VERSION = "v3"
 
-# Верхняя граница себестоимости стадии в USD. Держать синхронно с тарифами в
-# orchestration/real_cost.py — это те же формулы, взятые в максимуме допустимых
-# провайдером параметров. Занижение здесь не приводит к убытку (списание идёт по
-# факту), но урезает списание клампом в _settle: цена не может превысить холд,
-# поэтому слишком низкий холд = потерянная наценка.
-STAGE_COST_USD_MAX: dict[Stage, Decimal] = {
-    # max_tokens=4096 на выходе + ~4000 токенов входа (схема + сюжет), Haiku 4.5.
-    Stage.STORYBOARD: Decimal("0.025"),
-    # gen4_image: 5 кредитов Runway на изображение, фикс.
-    Stage.IMAGE: Decimal("0.05"),
-    # gen4_turbo, MAX_DURATION_SECONDS=10 (adapters/video/runway.py).
-    Stage.VIDEO: Decimal("0.50"),
-    # ElevenLabs $0.0001/символ. Верхняя граница — весь лимит ввода (4000
-    # символов, schemas.GenerateProjectRequest) в одной сцене: раскадровка не
-    # гарантирует распределения текста по сценам, а maxLength в scene-схеме
-    # grammar-constrained decoding не поддерживает (adapters/storyboard/anthropic.py).
-    # Держать 4000 синхронно с лимитом script_text.
-    Stage.AUDIO: Decimal("0.40"),
-    # Sync.so lipsync-2, те же 10 секунд, что у VIDEO.
-    Stage.LIPSYNC: Decimal("0.45"),
-    # ffmpeg на своих мощностях: real_cost.py возвращает 0, поэтому и цена 0.
-    Stage.COMPOSITION: Decimal("0"),
-}
+# Границы выбираемой длительности (сек). 5с — один короткий клип, 90с — ~15 сцен;
+# выше растёт риск сбоя на многосценных роликах и время генерации.
+MIN_DURATION_SECONDS = 5
+MAX_DURATION_SECONDS = 90
+
+# Целевая длина одного клипа-сцены. Runway режет клип в диапазоне 2..10с
+# (adapters/video/runway.py MIN/MAX_DURATION_SECONDS — держать синхронно),
+# поэтому число сцен = D / TARGET, но длина клипа клампится в этот диапазон.
+TARGET_CLIP_SECONDS = 6
+_CLIP_MIN = 2
+_CLIP_MAX = 10
+
+# Средняя плотность озвучки. ~150 слов/мин × ~5 символов = ~12.5 симв/с; берём 15
+# с запасом. Аудио — не главный драйвер (в voiceover ~$0.0015/с против $0.05/с
+# видео), поэтому точность второстепенна.
+AUDIO_CHARS_PER_SECOND = Decimal("15")
+
+# Фиксированная себестоимость раскадровки на ролик (Anthropic Haiku, верхняя
+# граница: max_tokens=4096 выхода + ~4000 входа). Амортизируется на всю длину.
+STORYBOARD_USD = Decimal("0.025")
 
 
-def price_sparks(cost_usd: Decimal) -> int:
-    """Сколько искр списать за работу себестоимостью cost_usd. Один в один, без
-    наценки — она уже собрана при продаже пакета.
-    Округление вверх и на стадию, а не на run: списания идут по задачам, ledger
-    целочисленный — дробить искру негде. Чем мельче номинал искры, тем меньше
-    округление задирает фактическую наценку выше price_markup."""
+def scene_count_for_duration(seconds: int) -> int:
+    """Сколько сцен нарезать под длительность. Длина клипа держится около
+    TARGET_CLIP_SECONDS, но не выходит за [2, 10] Runway."""
+    n = max(1, int((Decimal(seconds) / TARGET_CLIP_SECONDS).to_integral_value(rounding=ROUND_HALF_UP)))
+    # Клип не длиннее 10с -> при длинном ролике сцен должно быть достаточно.
+    import math
+
+    n = max(n, math.ceil(seconds / _CLIP_MAX))
+    # Клип не короче 2с -> не плодим больше сцен, чем влезает по нижней границе.
+    n = min(n, max(1, seconds // _CLIP_MIN))
+    return n
+
+
+def clip_seconds_for(seconds: int, scene_count: int) -> int:
+    """Длина клипа одной сцены (целые секунды, в диапазоне Runway)."""
+    raw = int((Decimal(seconds) / scene_count).to_integral_value(rounding=ROUND_HALF_UP))
+    return max(_CLIP_MIN, min(_CLIP_MAX, raw))
+
+
+def _cost_usd_for_duration(seconds: int) -> Decimal:
+    """Себестоимость ролика длительности seconds в USD. Детерминирована — те же
+    тарифы, что real_cost.py, взятые по выбранной длине, а не по факту."""
     from toontales_ai.config.settings import get_settings
 
-    raw = cost_usd / get_settings().spark_cost_usd
+    per_second_video = real_cost.RUNWAY_VIDEO_CREDITS_PER_SECOND * real_cost.RUNWAY_USD_PER_CREDIT
+    per_second_audio = AUDIO_CHARS_PER_SECOND * real_cost.ELEVENLABS_USD_PER_CHARACTER
+    per_second = per_second_video + per_second_audio
+    if get_settings().lipsync_enabled:
+        per_second += real_cost.SYNC_LIPSYNC_USD_PER_SECOND
+
+    scenes = scene_count_for_duration(seconds)
+    image = scenes * real_cost.RUNWAY_IMAGE_CREDITS_PER_IMAGE * real_cost.RUNWAY_USD_PER_CREDIT
+
+    return Decimal(seconds) * per_second + image + STORYBOARD_USD
+
+
+def price_from_duration(seconds: int) -> int:
+    """Цена ролика в искрах по выбранной длительности. Детерминирована, известна
+    до старта, списывается один раз на успехе. Округление вверх."""
+    from toontales_ai.config.settings import get_settings
+
+    raw = _cost_usd_for_duration(seconds) / get_settings().spark_cost_usd
     return int(raw.to_integral_value(rounding=ROUND_CEILING))
 
 
+def clamp_duration(seconds: int) -> int:
+    """Зажать длительность в допустимый диапазон. Валидация входа — на границе API
+    (schemas), здесь defensive."""
+    return max(MIN_DURATION_SECONDS, min(MAX_DURATION_SECONDS, seconds))
+
+
+# ---------- админ-сверка маржи ----------
+
+
 def revenue_usd(sparks: int) -> Decimal:
-    """Сколько сервис выручил за эти искры при продаже. Расчётная величина: она
-    верна для искр, купленных пакетами, и завышает выручку для начисленных
-    вручную (billing.topup) — их никто не оплачивал."""
+    """Сколько сервис выручил за эти искры при продаже (расчётно, по цене пакета).
+    Завышает для искр, начисленных вручную (billing.topup) — их никто не оплачивал."""
     from toontales_ai.config.settings import get_settings
 
     settings = get_settings()
@@ -77,34 +109,27 @@ def revenue_usd(sparks: int) -> Decimal:
 
 
 def actual_markup(sparks: int, cost_usd: Decimal | None) -> Decimal | None:
-    """Фактическая наценка: выручка / себестоимость. None, если себестоимость
-    неизвестна или нулевая — «наценка ∞» на бесплатной composition бессмысленна."""
+    """Фактическая наценка: выручка / себестоимость. None при неизвестной/нулевой
+    себестоимости."""
     if cost_usd is None or cost_usd <= 0:
         return None
     return (revenue_usd(sparks) / cost_usd).quantize(Decimal("0.01"))
 
 
-def stage_hold(stage: Stage) -> int:
-    """Сколько искр блокировать на балансе до запуска стадии."""
-    return price_sparks(STAGE_COST_USD_MAX[stage])
-
-
 # ---------- продажа искр ----------
 
-# Размеры пакетов в искрах. Привязаны к типовому ролику (~3300 искр): «на один»,
-# «на три», «на десять». Цена не хранится — считается из себестоимости, чтобы
-# наценка не разъехалась с прайсом провайдеров при правке тарифов.
+# Размеры пакетов в искрах. Ориентир — типовые ролики: ~10с, ~30с, ~90с роликов
+# соответственно. Цена не хранится — считается из себестоимости (package_price_rub),
+# чтобы наценка не разъехалась с тарифами.
 SPARK_PACKAGE_SIZES: tuple[int, ...] = (3_500, 10_000, 35_000)
 
-# До скольки рублей округлять витринную цену. Округление всегда ВВЕРХ: вниз —
-# значит продать дешевле себестоимости×markup.
+# До скольки рублей округлять витринную цену. Всегда ВВЕРХ.
 PRICE_ROUNDING_RUB = Decimal("10")
 
 
 def package_price_rub(sparks: int) -> Decimal:
     """Розничная цена пакета в рублях: себестоимость искр × наценка × курс с
-    буфером, округлённая вверх. Буфер закрывает движение курса между правками
-    settings.usd_rub_rate — без него маржа падает вместе с рублём."""
+    буфером, округлённая вверх."""
     from toontales_ai.config.settings import get_settings
 
     settings = get_settings()
@@ -116,15 +141,3 @@ def package_price_rub(sparks: int) -> Decimal:
         * (Decimal("1") + settings.usd_rub_buffer)
     )
     return (floor_rub / PRICE_ROUNDING_RUB).to_integral_value(rounding=ROUND_CEILING) * PRICE_ROUNDING_RUB
-
-
-def estimate_run_cost(scene_count: int) -> int:
-    """Полный холд на run: storyboard один раз + per-scene стадии.
-    Используется как GenerationRun.max_budget / estimated_cost (review.md §10).
-    В voiceover-режиме (settings.lipsync_enabled=False) стадии LIPSYNC нет."""
-    from toontales_ai.config.settings import get_settings
-
-    per_scene = stage_hold(Stage.IMAGE) + stage_hold(Stage.VIDEO) + stage_hold(Stage.AUDIO)
-    if get_settings().lipsync_enabled:
-        per_scene += stage_hold(Stage.LIPSYNC)
-    return stage_hold(Stage.STORYBOARD) + scene_count * per_scene + stage_hold(Stage.COMPOSITION)

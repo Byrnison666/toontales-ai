@@ -283,7 +283,7 @@ export function RunPage(): JSX.Element {
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg text-violet-200">Свет гаснет, занавес открывается — приятного просмотра.</p>
           <p className="mt-3 text-sm text-violet-300">
-            Списано <span className="font-bold text-amber-100">{snapshot.total_price.toLocaleString('ru-RU')} ✦</span>
+            Цена <span className="font-bold text-amber-100">{snapshot.price.toLocaleString('ru-RU')} ✦</span>
             {' '}— остаток резерва уже вернулся на баланс.
           </p>
         </motion.div>

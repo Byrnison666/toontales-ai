@@ -26,6 +26,12 @@ def credit_charge_key(task_id: uuid.UUID) -> str:
     return f"charge:{task_id}"
 
 
+def credit_run_charge_key(run_id: uuid.UUID) -> str:
+    """Единственное списание за ролик — по успешной COMPOSITION (прайсинг v3).
+    Ключ на run, а не task: повторная доставка COMPOSITION-колбэка не спишет дважды."""
+    return f"run_charge:{run_id}"
+
+
 def credit_release_key(task_id: uuid.UUID) -> str:
     return f"release:{task_id}"
 

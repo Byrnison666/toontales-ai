@@ -7,14 +7,19 @@ from pydantic import BaseModel, Field
 class GenerateProjectRequest(BaseModel):
     project_name: str = Field(min_length=1, max_length=200)
     script_text: str = Field(min_length=1, max_length=4000)  # жёсткий лимит входа (review.md §10)
+    # Длительность ролика в секундах: задаёт цену (детерминированно) и форму
+    # пайплайна (число сцен, длину клипов). Границы — pricing.MIN/MAX_DURATION.
+    duration_seconds: int = Field(ge=5, le=90)
 
 
 class GenerateProjectResponse(BaseModel):
     project_id: uuid.UUID
     run_id: uuid.UUID
     status: str
-    estimated_cost: int
-    max_budget: int
+    # Точная цена ролика в искрах (прайсинг v3): известна до старта, списывается
+    # один раз на успехе. Резерва нет.
+    duration_seconds: int
+    price: int
 
 
 class SparkPackageItem(BaseModel):
@@ -29,11 +34,17 @@ class SparkPackagesResponse(BaseModel):
     packages: list[SparkPackageItem]
 
 
-class PricingQuoteResponse(BaseModel):
-    """Верхняя граница резерва на генерацию, в искрах. Фактическое списание
-    считается по себестоимости стадий и обычно заметно ниже."""
+class DurationPriceItem(BaseModel):
+    duration_seconds: int
+    price: int
 
-    max_hold: int
+
+class PricingQuoteResponse(BaseModel):
+    """Точная цена по длительностям (прайсинг v3). Пресеты 10/30/60 + текущий
+    выбор пользователя считаются одним эндпоинтом. Резерва нет — это финальная
+    цена, которая спишется на успехе."""
+
+    prices: list[DurationPriceItem]
 
 
 class TaskSnapshot(BaseModel):
@@ -42,11 +53,8 @@ class TaskSnapshot(BaseModel):
     stage: str
     status: str
     progress_hint: str
-    # Цена в искрах: cost — заблокированный холд, price — фактическое списание
-    # (None, пока задача не завершилась). Себестоимость в USD клиенту не отдаётся,
-    # она есть только в админской выдаче (api/v1/admin.py).
-    cost: int
-    price: int | None
+    # Прайсинг v3: денег на уровне задачи нет — цена на уровне run
+    # (RunSnapshotResponse.price). Задача несёт только прогресс.
     error: dict | None
 
 
@@ -72,8 +80,10 @@ class RunSnapshotResponse(BaseModel):
     status: str
     trigger: str
     created_at: datetime
-    # Сколько искр реально списано за run на текущий момент (сумма Task.price).
-    total_price: int
+    # Прайсинг v3: детерминированная цена ролика из выбранной длительности.
+    # Списывается один раз на успешной COMPOSITION; до успеха баланс не тронут.
+    duration_seconds: int
+    price: int
     scenes: list[SceneSnapshot]
     tasks: list[TaskSnapshot]
     assets: list[MediaAssetSnapshot]

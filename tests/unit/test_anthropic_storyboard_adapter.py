@@ -62,7 +62,8 @@ class _FakeAsyncClient:
 
 
 def _messages_response(scenes: list[dict]) -> dict:
-    payload = dict(zip(anthropic_module.SCENE_KEYS, scenes, strict=False))
+    # Прайсинг v3: ключи scene_1..scene_N по числу сцен (динамически).
+    payload = {f"scene_{i}": scene for i, scene in enumerate(scenes, start=1)}
     return {
         "content": [{"type": "text", "text": json.dumps(payload)}],
         "usage": {"input_tokens": 120, "output_tokens": 340},
@@ -87,13 +88,20 @@ def test_config_error_when_api_key_missing(monkeypatch):
 
 
 async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
+    from toontales_ai.orchestration.pricing import scene_count_for_duration
+
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    scenes = [_sample_scene(), _sample_scene()]
+    # duration=10с -> ровно 2 сцены (scene_count_for_duration).
+    expected_n = scene_count_for_duration(10)
+    scenes = [_sample_scene() for _ in range(expected_n)]
     _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response(scenes))
 
     adapter = AnthropicStoryboardAdapter()
     submission = await adapter.submit(
-        StageInput(task_id="t1", scene_id=None, payload={"script_text": "A fox explores a magical forest."}),
+        StageInput(
+            task_id="t1", scene_id=None,
+            payload={"script_text": "A fox explores a magical forest.", "duration_seconds": 10},
+        ),
         idempotency_key="run1:storyboard_generation:v1",
     )
 
@@ -106,13 +114,12 @@ async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
     assert body["model"] == "claude-haiku-4-5-20251001"
     assert body["messages"] == [{"role": "user", "content": "A fox explores a magical forest."}]
     assert body["output_config"]["format"]["type"] == "json_schema"
-    # Диапазон MIN_SCENES..MAX_SCENES закодирован структурой схемы, а не текстом промпта:
-    # ключей ровно MAX_SCENES + additionalProperties=False -> больше физически не выдать,
-    # required первых MIN_SCENES -> меньше тоже.
+    # Прайсинг v3: число сцен фиксировано длительностью — ровно N ключей, ВСЕ required
+    # (additionalProperties=False не даёт больше, required не даёт меньше).
     schema = body["output_config"]["format"]["schema"]
-    assert list(schema["properties"]) == list(anthropic_module.SCENE_KEYS)
-    assert len(schema["properties"]) == anthropic_module.MAX_SCENES
-    assert schema["required"] == list(anthropic_module.SCENE_KEYS[: anthropic_module.MIN_SCENES])
+    expected_keys = [f"scene_{i}" for i in range(1, expected_n + 1)]
+    assert list(schema["properties"]) == expected_keys
+    assert schema["required"] == expected_keys
     assert schema["additionalProperties"] is False
     assert _FakeAsyncClient.last_post_call["headers"]["x-api-key"] == "key-1"
 
@@ -125,7 +132,7 @@ async def test_proxy_passed_to_client_when_configured(monkeypatch):
 
     adapter = AnthropicStoryboardAdapter()
     await adapter.submit(
-        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 10}),
         idempotency_key="k",
     )
     assert _FakeAsyncClient.last_init_kwargs["proxy"] == "http://proxy.example:3128"
@@ -138,7 +145,7 @@ async def test_no_proxy_when_unset(monkeypatch):
 
     adapter = AnthropicStoryboardAdapter()
     await adapter.submit(
-        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 10}),
         idempotency_key="k",
     )
     assert _FakeAsyncClient.last_init_kwargs["proxy"] is None
@@ -198,14 +205,16 @@ async def test_submit_rejects_response_without_scenes(monkeypatch):
 
 
 async def test_submit_rejects_too_few_scenes(monkeypatch):
+    # duration=10 -> ждём 2 сцены; пустой ответ (0) < MIN_SCENES -> ошибка.
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    too_few = [_sample_scene() for _ in range(anthropic_module.MIN_SCENES - 1)]
-    _FakeAsyncClient.post_response = _FakeResponse(200, json_data=_messages_response(too_few))
+    _FakeAsyncClient.post_response = _FakeResponse(
+        200, json_data={"content": [{"type": "text", "text": json.dumps({})}], "usage": {"input_tokens": 1, "output_tokens": 1}}
+    )
 
     adapter = AnthropicStoryboardAdapter()
     with pytest.raises(AnthropicAPIError):
         await adapter.submit(
-            StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+            StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 10}),
             idempotency_key="k",
         )
 
@@ -225,7 +234,7 @@ async def test_submit_collects_sparse_scene_keys_in_order(monkeypatch):
 
     adapter = AnthropicStoryboardAdapter()
     submission = await adapter.submit(
-        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 30}),
         idempotency_key="k",
     )
 

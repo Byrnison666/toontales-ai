@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import (
-    CreditTransactionType,
     RetentionClass,
     RunStatus,
     RunTrigger,
@@ -19,11 +18,9 @@ from toontales_ai.domain.enums import (
     TaskStatus,
 )
 from toontales_ai.adapters.moderation import get_moderation_adapter, moderate_text_or_raise
-from toontales_ai.domain.models import CreditTransaction, GenerationRun, MediaAsset, PipelineOutbox, Scene, Task, User
-from toontales_ai.orchestration.idempotency import credit_hold_key, task_idempotency_key
-from toontales_ai.orchestration.pricing import estimate_run_cost, stage_hold
-
-MAX_ASSUMED_SCENES = 6  # ориентир из v2.md: "до 5-6 сцен на 30-секундный ролик"
+from toontales_ai.domain.models import GenerationRun, MediaAsset, PipelineOutbox, Project, Scene, Task, User
+from toontales_ai.orchestration.idempotency import task_idempotency_key
+from toontales_ai.orchestration.pricing import price_from_duration
 
 
 class InsufficientCreditsError(Exception):
@@ -38,42 +35,59 @@ class InvalidPartialRerunError(Exception):
     pass
 
 
+async def _committed_active_price(session: AsyncSession, user_id: uuid.UUID, exclude_run_id: uuid.UUID | None) -> int:
+    """Суммарная цена ещё не завершённых (RUNNING/PENDING) роликов пользователя.
+    Прайсинг v3 не резервирует баланс, поэтому оверсабскрипшн параллельными
+    запусками ловится проверкой: баланс должен покрывать этот ролик + уже
+    запущенные. Списание каждого случится по его успеху."""
+    stmt = (
+        select(GenerationRun.price)
+        .join(Project, Project.id == GenerationRun.project_id)
+        .where(
+            Project.user_id == user_id,
+            GenerationRun.status.in_((RunStatus.RUNNING, RunStatus.PENDING)),
+        )
+    )
+    if exclude_run_id is not None:
+        stmt = stmt.where(GenerationRun.id != exclude_run_id)
+    prices = (await session.execute(stmt)).scalars().all()
+    return sum(prices)
+
+
 async def start_run(
     session: AsyncSession,
     *,
     project_id: uuid.UUID,
     user_id: uuid.UUID,
     script_text: str,
+    duration_seconds: int,
 ) -> GenerationRun:
-    # Модерация пользовательского текста до создания run/hold (v2.md §3: "готовность
-    # к добавлению модерации... промпты сохраняются для аудита уже в MVP").
+    # Модерация пользовательского текста до создания run (v2.md §3).
     await moderate_text_or_raise(get_moderation_adapter(), script_text)
 
-    max_budget = estimate_run_cost(MAX_ASSUMED_SCENES)
-    storyboard_cost = stage_hold(Stage.STORYBOARD)
+    price = price_from_duration(duration_seconds)
 
-    # SELECT ... FOR UPDATE на баланс пользователя перед hold (review.md §4).
+    # FOR UPDATE на баланс: сериализует конкурентные старты одного user, чтобы
+    # проверка "хватает на этот + активные" не гонялась с параллельным стартом.
     user = (
         await session.execute(select(User).where(User.id == user_id).with_for_update())
     ).scalar_one()
-    # P0 (найдено аудитом финансовой корректности): раньше проверялась только
-    # storyboard_cost (50) вместо max_budget (~1680 на 6 сцен) — пользователь с
-    # балансом, скажем, 100 мог СТАРТОВАТЬ run, а на 2-3 стадии
-    # pipeline_sync._hold_and_enqueue списывало бы баланс в минус и упиралось
-    # в CheckConstraint("credit_balance >= 0") на уровне Postgres: вся
-    # транзакция complete_task() откатывалась, Task не COMPLETED, Celery-задача
-    # падала с необработанным IntegrityError — run зависал в RUNNING навсегда
-    # без ошибки пользователю. request_partial_rerun() ниже уже правильно
-    # проверяет весь estimated_total_cost — здесь тот же паттерн.
-    if user.credit_balance < max_budget:
-        raise InsufficientCreditsError(f"balance {user.credit_balance} < required {max_budget}")
+    # Прайсинг v3: баланс НЕ трогаем на старте (ни резерва, ни списания). Но раз
+    # резерва нет, оверсабскрипшн параллельными роликами ловим здесь: баланс должен
+    # покрыть цену этого + сумму цен уже активных запусков. Списание — по успеху
+    # каждого (pipeline_sync._charge_run).
+    active_price = await _committed_active_price(session, user_id, exclude_run_id=None)
+    if user.credit_balance < price + active_price:
+        raise InsufficientCreditsError(
+            f"balance {user.credit_balance} < required {price} + active {active_price}"
+        )
 
     run = GenerationRun(
         project_id=project_id,
         trigger=RunTrigger.INITIAL,
         status=RunStatus.RUNNING,
-        estimated_cost=max_budget,
-        max_budget=max_budget,
+        duration_seconds=duration_seconds,
+        price=price,
     )
     session.add(run)
     await session.flush()
@@ -86,25 +100,15 @@ async def start_run(
         scene_id=None,
         stage=Stage.STORYBOARD,
         provider="llm",
-        input_snapshot={"script_text": script_text},
+        # duration_seconds в input раскадровки: инвертируем поток — длительность
+        # задаёт число сцен и длину клипов, а не выводится из контента.
+        input_snapshot={"script_text": script_text, "duration_seconds": duration_seconds},
         input_hash=key,
         idempotency_key=key,
-        cost=storyboard_cost,
     )
     session.add(task)
     await session.flush()
 
-    user.credit_balance -= storyboard_cost
-    session.add(
-        CreditTransaction(
-            user_id=user_id,
-            run_id=run.id,
-            task_id=task.id,
-            type=CreditTransactionType.HOLD,
-            amount=storyboard_cost,
-            idempotency_key=credit_hold_key(task.id),
-        )
-    )
     session.add(PipelineOutbox(event_type="enqueue_task", aggregate_id=task.id, payload={"task_id": str(task.id)}))
 
     await session.commit()
@@ -257,27 +261,19 @@ async def request_partial_rerun(
     elif scene_id is not None:
         raise InvalidPartialRerunError(f"scene_id must be omitted for run-scoped stage {stage.value}")
 
-    # estimated_cost/max_budget — информативная смета на весь downstream-каскад;
-    # реально резервируется (hold) только стоимость первой стадии, остальное
-    # холдируется инкрементально в pipeline_sync._advance по мере прогрессии
-    # (иначе downstream-стадии задвоили бы hold: один здесь, второй в _advance).
+    # Прайсинг v3: partial rerun БЕСПЛАТЕН — это перегенерация части уже
+    # оплаченного ролика, не новая покупка. price=0 → _charge_run на COMPOSITION
+    # ничего не спишет. (Компромисс: бесконечные re-roll'ы бесплатны; если станет
+    # проблемой — ввести фиксированную плату за rerun.)
     stages_to_rerun = (stage, *STAGE_DOWNSTREAM.get(stage, ()))
-    estimated_total_cost = sum(stage_hold(s) for s in stages_to_rerun)
-    initial_hold_cost = stage_hold(stage)
-
-    user = (
-        await session.execute(select(User).where(User.id == user_id).with_for_update())
-    ).scalar_one()
-    if user.credit_balance < estimated_total_cost:
-        raise InsufficientCreditsError(f"balance {user.credit_balance} < required {estimated_total_cost}")
 
     new_run = GenerationRun(
         project_id=parent_run.project_id,
         trigger=RunTrigger.PARTIAL_RERUN,
         parent_run_id=parent_run.id,
         status=RunStatus.RUNNING,
-        estimated_cost=estimated_total_cost,
-        max_budget=estimated_total_cost,
+        duration_seconds=parent_run.duration_seconds,
+        price=0,
         character_version_id=parent_run.character_version_id,
     )
     session.add(new_run)
@@ -347,22 +343,11 @@ async def request_partial_rerun(
         input_snapshot=input_snapshot,
         input_hash=key,
         idempotency_key=key,
-        cost=stage_hold(stage),
     )
     session.add(task)
     await session.flush()
 
-    user.credit_balance -= initial_hold_cost
-    session.add(
-        CreditTransaction(
-            user_id=user_id,
-            run_id=new_run.id,
-            task_id=task.id,
-            type=CreditTransactionType.HOLD,
-            amount=initial_hold_cost,
-            idempotency_key=credit_hold_key(task.id),
-        )
-    )
+    # Прайсинг v3: rerun бесплатен — баланс не трогаем, проводок нет.
     session.add(PipelineOutbox(event_type="enqueue_task", aggregate_id=task.id, payload={"task_id": str(task.id)}))
 
     await session.commit()

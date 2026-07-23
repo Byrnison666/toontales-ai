@@ -6,7 +6,6 @@ loop и своя sync Session на каждый вызов (review.md §7 — н
 между задачами)."""
 
 import asyncio
-import math
 import random
 import tempfile
 import uuid
@@ -16,7 +15,7 @@ from pathlib import Path
 import httpx
 import redis
 from celery import Task as CeleryTask
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from toontales_ai.adapters.base import ProviderJobResult, ProviderSubmission, StageInput
 from toontales_ai.adapters.image.runway import RunwayImageTransientError
@@ -30,7 +29,7 @@ from toontales_ai.adapters.video.runway import (
 )
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
-from toontales_ai.domain.models import MediaAsset, Scene, Task
+from toontales_ai.domain.models import GenerationRun, MediaAsset, Scene, Task
 from toontales_ai.orchestration import provider_semaphore
 from toontales_ai.orchestration.pipeline_sync import complete_task
 from toontales_ai.storage.composition import (
@@ -157,7 +156,10 @@ def _run_composition(session, task: Task) -> ProviderSubmission:
                 clips.append(SceneClip(video_path=video_path))
                 continue
 
-            # Voiceover: немое видео + отдельная озвучка, длина сцены = длине озвучки.
+            # Voiceover (прайсинг v3): длина сцены = длине ВИДЕО (фиксированный клип
+            # из выбранной длительности ролика). Озвучка кладётся поверх; короче
+            # видео -> дополняется тишиной (apad в compose_scenes), длиннее ->
+            # подрезается. Раньше сцена равнялась озвучке; теперь наоборот.
             audio_key = _unique_scene_asset_key(session, scene.id, kind=MediaKind.AUDIO, stage=Stage.AUDIO)
             audio_path = tmp_dir / f"scene_{scene.scene_index}.audio"
             try:
@@ -168,7 +170,7 @@ def _run_composition(session, task: Task) -> ProviderSubmission:
                 SceneClip(
                     video_path=video_path,
                     audio_path=audio_path,
-                    audio_duration=probe_duration_seconds(audio_path),
+                    scene_duration=probe_duration_seconds(video_path),
                 )
             )
 
@@ -206,20 +208,19 @@ def _failed_submission(error_code: str, error_detail: str) -> ProviderSubmission
     )
 
 
-def _scene_audio_duration_seconds(session, scene_id) -> int:
-    """Длина озвучки сцены в секундах, ceil + кламп в Runway-диапазон 2..10 (voiceover:
-    видео генерируется под озвучку). Значение кладётся и в Runway duration, и в
-    task.input_snapshot для точного real_cost — поэтому клампим здесь, чтобы совпало
-    с тем, что Runway фактически отрендерит."""
-    audio_key = _unique_scene_asset_key(session, scene_id, kind=MediaKind.AUDIO, stage=Stage.AUDIO)
-    with tempfile.TemporaryDirectory(prefix="toontales-audioprobe-") as td:
-        tmp_path = Path(td) / "audio"
-        try:
-            download_to_path(audio_key, tmp_path, max_bytes=MAX_COMPOSITION_INPUT_BYTES)
-        except DownloadSizeExceededError as exc:
-            raise CompositionError(str(exc)) from exc
-        duration = probe_duration_seconds(tmp_path)
-    return max(MIN_DURATION_SECONDS, min(MAX_DURATION_SECONDS, math.ceil(duration)))
+def _scene_clip_seconds(session, run_id) -> int:
+    """Длина клипа сцены (сек), детерминированная выбранной длительностью ролика:
+    clip = clip_seconds_for(D, число сцен). Прайсинг v3 инвертирует поток —
+    длительность задаёт видео, а не наоборот. Число сцен берём фактическое
+    (Scene в run), оно = scene_count_for_duration(D) по построению fan-out."""
+    from toontales_ai.orchestration.pricing import clip_seconds_for
+
+    run = session.get(GenerationRun, run_id)
+    scene_count = session.execute(
+        select(func.count()).select_from(Scene).where(Scene.generation_run_id == run_id)
+    ).scalar_one()
+    scene_count = max(1, scene_count)
+    return clip_seconds_for(run.duration_seconds, scene_count)
 
 
 def _build_stage_input(session, task: Task) -> StageInput:
@@ -263,10 +264,11 @@ def _build_stage_input(session, task: Task) -> StageInput:
                     )
                 if image_assets:
                     payload["source_image_url"] = presigned_get_url(image_assets[0].storage_key)
-                if not get_settings().lipsync_enabled:
-                    # Voiceover: VIDEO — join на (IMAGE, AUDIO); длину видео подгоняем
-                    # под уже готовую озвучку сцены (Runway duration = ceil(audio), 2..10).
-                    payload["duration_seconds"] = _scene_audio_duration_seconds(session, scene.id)
+                # Прайсинг v3 (инверсия): длина клипа детерминирована выбранной
+                # длительностью ролика, а НЕ выводится из озвучки. Итог: сумма
+                # клипов ≈ выбранная длительность; где озвучка короче — в конце
+                # тишина (composition накладывает аудио, не подрезая видео).
+                payload["duration_seconds"] = _scene_clip_seconds(session, task.run_id)
             elif task.stage == Stage.LIPSYNC:
                 # LIPSYNC — join-стадия (STAGE_PREDECESSORS: требует VIDEO и AUDIO).
                 # Реальному адаптеру (SyncAdapter) нужны HTTPS URL уже готовых

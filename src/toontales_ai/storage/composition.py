@@ -42,11 +42,12 @@ class CompositionError(Exception):
 @dataclass(frozen=True, slots=True)
 class SceneClip:
     video_path: Path
-    # voiceover-режим: отдельная озвучка кладётся поверх немого видео. audio_duration —
-    # эталонная длина сцены (сек): видео короче -> freeze последнего кадра, длиннее ->
-    # тримминг, так речь не режется. None -> lipsync-режим (звук уже в video_path).
+    # voiceover-режим: отдельная озвучка кладётся поверх немого видео. scene_duration —
+    # эталонная длина сцены (сек). Прайсинг v3: это длина ВИДЕО-клипа (фиксирована
+    # выбранной длительностью ролика). Озвучка короче -> дополняется тишиной (apad),
+    # длиннее -> подрезается. None -> lipsync-режим (звук уже в video_path).
     audio_path: Path | None = None
-    audio_duration: float | None = None
+    scene_duration: float | None = None
 
 
 # Максимальный freeze хвоста видео под озвучку (voiceover). Видео Runway 2..10с,
@@ -119,7 +120,7 @@ def compose_scenes(
 
     Два режима на клип: lipsync (audio_path=None — звук уже в видео, берётся дорожка
     [i:a]) и voiceover (audio_path задан — отдельная озвучка кладётся поверх немого
-    видео, длина сцены = audio_duration, видео короче -> freeze хвоста, длиннее ->
+    видео, длина сцены = scene_duration, видео короче -> freeze хвоста, длиннее ->
     тримминг). Режим определяется наличием audio_path у клипов."""
     if not scenes:
         raise CompositionError("no scenes to compose")
@@ -136,11 +137,11 @@ def compose_scenes(
     next_input_index = len(scenes)
     if voiceover:
         for i, scene in enumerate(scenes):
-            if scene.audio_path is None or scene.audio_duration is None:
+            if scene.audio_path is None or scene.scene_duration is None:
                 # Смешанный режим (часть клипов с озвучкой, часть без) не поддержан —
                 # режим глобальный по run (settings.lipsync_enabled).
                 raise CompositionError(
-                    f"voiceover clip {i} requires both audio_path and audio_duration"
+                    f"voiceover clip {i} requires both audio_path and scene_duration"
                 )
             inputs += ["-i", str(scene.audio_path)]
             audio_input_index[i] = next_input_index
@@ -153,7 +154,7 @@ def compose_scenes(
             f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1"
         )
         if voiceover:
-            duration = scene.audio_duration
+            duration = scene.scene_duration
             filter_parts.append(
                 f"{base},tpad=stop_mode=clone:stop_duration={MAX_FREEZE_SECONDS},"
                 f"trim=duration={duration},setpts=PTS-STARTPTS[v{i}]"

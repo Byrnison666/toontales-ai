@@ -181,11 +181,13 @@ class AdminRunItem(BaseModel):
     user_email: str
     status: str
     trigger: str
-    estimated_cost: int
+    # Цена ролика в искрах (прайсинг v3, детерминирована длительностью).
+    price: int
+    duration_seconds: int
     real_cost_usd: str | None
     # Списано искр с клиента и фактическая наценка (выручка / себестоимость).
-    # Расхождение с settings.price_markup означает, что тарифы провайдеров
-    # разошлись с STAGE_COST_USD_MAX либо стадия завершилась без usage.
+    # Расхождение с settings.price_markup означает, что тариф провайдера разошёлся
+    # с расчётом в real_cost.py либо стадия завершилась без usage.
     charged_sparks: int
     actual_markup: str | None
     created_at: str
@@ -244,7 +246,8 @@ async def list_runs(
                 user_email=email,
                 status=run.status.value,
                 trigger=run.trigger.value,
-                estimated_cost=run.estimated_cost,
+                price=run.price,
+                duration_seconds=run.duration_seconds,
                 real_cost_usd=str(real_cost) if real_cost is not None else None,
                 charged_sparks=charged or 0,
                 actual_markup=_markup_str(charged or 0, real_cost),

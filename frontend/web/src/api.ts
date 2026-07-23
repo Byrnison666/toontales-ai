@@ -21,18 +21,24 @@ export interface AuthResponse {
 export interface GenerateRequest {
   project_name: string
   script_text: string
+  duration_seconds: number
 }
 
 export interface GenerateResponse {
   project_id: string
   run_id: string
   status: RunStatus
-  estimated_cost: number
-  max_budget: number
+  duration_seconds: number
+  price: number
+}
+
+export interface DurationPrice {
+  duration_seconds: number
+  price: number
 }
 
 export interface PricingQuote {
-  max_hold: number
+  prices: DurationPrice[]
 }
 
 export interface SparkPackage {
@@ -56,8 +62,6 @@ export interface RunTask {
   stage: Stage
   status: string
   progress_hint: number | null
-  cost: number
-  price: number | null
   error: unknown
 }
 
@@ -74,7 +78,8 @@ export interface RunSnapshot {
   status: RunStatus
   trigger: string
   created_at: string
-  total_price: number
+  duration_seconds: number
+  price: number
   scenes: RunScene[]
   tasks: RunTask[]
   assets: RunAsset[]
@@ -215,8 +220,9 @@ export const api = {
     })
   },
 
-  getPricingQuote(): Promise<PricingQuote> {
-    return request<PricingQuote>('/pricing/quote')
+  getPricingQuote(durationSeconds?: number): Promise<PricingQuote> {
+    const q = durationSeconds ? `?duration_seconds=${durationSeconds}` : ''
+    return request<PricingQuote>(`/pricing/quote${q}`)
   },
 
   getSparkPackages(): Promise<SparkPackages> {

@@ -25,13 +25,12 @@ ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_API_VERSION = "2023-06-01"
 REQUEST_TIMEOUT_SECONDS = 60.0
 
-# v2.md ориентир: "до 5-6 сцен на 30-секундный ролик". Верхняя граница совпадает
-# с MAX_ASSUMED_SCENES (pipeline_async.py) — max_budget рассчитан именно на 6 сцен,
-# больше модель предлагать не должна (иначе _materialize_scenes_and_fanout обрежет
-# лишние молча, а деньги за них не спишутся, но раскадровка не совпадёт с тем, что
-# видела модель).
-MIN_SCENES = 2
-MAX_SCENES = 6
+# Прайсинг v3: число сцен ФИКСИРОВАНО выбранной длительностью ролика
+# (pricing.scene_count_for_duration), а не выбирается моделью. Схема и промпт
+# строятся под это N в submit() — модель обязана вернуть ровно N сцен, каждый
+# клип детерминирован (pricing.clip_seconds_for). MIN_SCENES — нижняя граница для
+# защиты от битого ответа (schema-required).
+MIN_SCENES = 1
 
 SCENE_SCHEMA = {
     "type": "object",
@@ -45,33 +44,39 @@ SCENE_SCHEMA = {
     "additionalProperties": False,
 }
 
-SCENE_KEYS = tuple(f"scene_{index}" for index in range(1, MAX_SCENES + 1))
 
-# minItems/maxItems > 1 не поддерживаются grammar-constrained decoding
-# ("'minItems' values other than 0 or 1 are not supported" — живой 400 от API), а
-# текстовое ограничение в SYSTEM_PROMPT haiku нарушает (живой ответ на 10 сцен).
-# Поэтому вместо массива — объект с фиксированными ключами: additionalProperties=False
-# делает MAX_SCENES недостижимым структурно, required даёт MIN_SCENES.
-STORYBOARD_SCHEMA = {
-    "type": "object",
-    # $ref вместо MAX_SCENES копий SCENE_SCHEMA: без него схема стоит ~3.4k лишних
-    # input-токенов на каждый вызов.
-    "$defs": {"scene": SCENE_SCHEMA},
-    "properties": {key: {"$ref": "#/$defs/scene"} for key in SCENE_KEYS},
-    "required": list(SCENE_KEYS[:MIN_SCENES]),
-    "additionalProperties": False,
-}
+def _scene_keys(scene_count: int) -> tuple[str, ...]:
+    return tuple(f"scene_{i}" for i in range(1, scene_count + 1))
 
-SYSTEM_PROMPT = (
-    "Ты сценарист коротких анимированных роликов. По сюжету пользователя составь "
-    "раскадровку из {min_scenes}-{max_scenes} сцен для 20-30-секундного вертикального "
-    "(9:16) ролика. Заполняй ключи scene_1, scene_2, ... подряд, без пропусков, и "
-    "останавливайся, когда сюжет рассказан целиком. Для каждой сцены дай: script_text "
-    "(короткая реплика или закадровый текст на том же языке, что и исходный сюжет), "
-    "image_prompt (детальное описание кадра на английском для text-to-image модели), "
-    "camera_movement (короткое описание движения камеры на английском) и mood_notes "
-    "(тон/настроение сцены на английском)."
-).format(min_scenes=MIN_SCENES, max_scenes=MAX_SCENES)
+
+def _storyboard_schema(scene_count: int) -> dict:
+    # Объект с фиксированными ключами scene_1..scene_N, ВСЕ required:
+    # additionalProperties=False не даёт вернуть больше N, required — меньше.
+    # minItems/maxItems grammar-constrained decoding не поддерживает.
+    keys = _scene_keys(scene_count)
+    return {
+        "type": "object",
+        # $ref вместо N копий SCENE_SCHEMA — экономит input-токены.
+        "$defs": {"scene": SCENE_SCHEMA},
+        "properties": {key: {"$ref": "#/$defs/scene"} for key in keys},
+        "required": list(keys),
+        "additionalProperties": False,
+    }
+
+
+def _system_prompt(scene_count: int, clip_seconds: int) -> str:
+    return (
+        f"Ты сценарист коротких анимированных роликов. По сюжету пользователя составь "
+        f"раскадровку ровно из {scene_count} сцен для вертикального (9:16) ролика. "
+        f"Каждая сцена — это клип примерно {clip_seconds} секунд; закадровый текст "
+        f"(script_text) должен произноситься примерно за это время, не длиннее. "
+        f"Заполни ключи scene_1..scene_{scene_count} подряд, все до одного, равномерно "
+        f"распределив сюжет. Для каждой сцены дай: script_text (короткая реплика или "
+        f"закадровый текст на том же языке, что и исходный сюжет), image_prompt "
+        f"(детальное описание кадра на английском для text-to-image модели), "
+        f"camera_movement (короткое описание движения камеры на английском) и "
+        f"mood_notes (тон/настроение сцены на английском)."
+    )
 
 
 class AnthropicConfigError(Exception):
@@ -126,12 +131,20 @@ class AnthropicStoryboardAdapter:
         if not script_text:
             raise AnthropicAPIError("empty script_text: nothing to break into scenes")
 
+        # Прайсинг v3: число сцен и длина клипа детерминированы длительностью ролика.
+        from toontales_ai.orchestration.pricing import clip_seconds_for, scene_count_for_duration
+
+        duration_seconds = int(payload.payload.get("duration_seconds", 0)) or 30
+        scene_count = scene_count_for_duration(duration_seconds)
+        clip_seconds = clip_seconds_for(duration_seconds, scene_count)
+        scene_keys = _scene_keys(scene_count)
+
         body = {
             "model": self._model,
             "max_tokens": 4096,
-            "system": SYSTEM_PROMPT,
+            "system": _system_prompt(scene_count, clip_seconds),
             "messages": [{"role": "user", "content": script_text}],
-            "output_config": {"format": {"type": "json_schema", "schema": STORYBOARD_SCHEMA}},
+            "output_config": {"format": {"type": "json_schema", "schema": _storyboard_schema(scene_count)}},
         }
 
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, proxy=self._proxy) as client:
@@ -150,12 +163,12 @@ class AnthropicStoryboardAdapter:
         except json.JSONDecodeError as exc:
             raise AnthropicAPIError(f"Anthropic structured output is not valid JSON: {exc}") from exc
 
-        # Объект scene_1..scene_N -> упорядоченный список. Пропущенные ключи просто
-        # не попадают в список: модель может остановиться раньше MAX_SCENES.
-        scenes = [parsed[key] for key in SCENE_KEYS if key in parsed]
+        # Объект scene_1..scene_N -> упорядоченный список. Схема требует все N ключей,
+        # но защищаемся от битого ответа нижней границей.
+        scenes = [parsed[key] for key in scene_keys if key in parsed]
         if len(scenes) < MIN_SCENES:
             raise AnthropicAPIError(
-                f"Anthropic returned {len(scenes)} scenes, expected at least {MIN_SCENES}"
+                f"Anthropic returned {len(scenes)} scenes, expected {scene_count}"
             )
 
         result = ProviderJobResult(

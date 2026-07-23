@@ -5,3 +5,6 @@ __pycache__/
 *.egg-info/
 .env
 celerybeat-schedule
+
+# Личные настройки Claude Code (в т.ч. прод-доступ) — не коммитить
+.claude/settings.local.json

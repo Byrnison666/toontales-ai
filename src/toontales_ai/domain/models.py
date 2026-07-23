@@ -136,7 +136,14 @@ class GenerationRun(Base):
     # (review.md §10: over-engineering / утечка секретов при полном snapshot).
     provider_config_fingerprint: Mapped[dict] = mapped_column(JSONB, default=dict)
 
-    # Предварительная смета и бюджетный потолок run (review.md §10, пробел "предварительная смета").
+    # Прайсинг v3 (посекундный, без резерва). Пользователь выбирает длительность,
+    # цена детерминирована из неё (pricing.price_from_duration) и известна до старта.
+    # Списание одно, на успешной COMPOSITION, ровно price — независимо от факта.
+    # duration_seconds=0 у legacy-ранов до v3 (миграция 0009 не бэкфиллит).
+    duration_seconds: Mapped[int] = mapped_column(default=0)
+    price: Mapped[int] = mapped_column(default=0)
+
+    # Legacy (прайсинг v2, hold/settle): больше не используются, оставлены для истории.
     estimated_cost: Mapped[int] = mapped_column(default=0)
     max_budget: Mapped[int] = mapped_column(default=0)
 

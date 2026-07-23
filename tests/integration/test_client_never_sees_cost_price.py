@@ -24,15 +24,17 @@ def _seed_completed_run(session) -> tuple[uuid.UUID, uuid.UUID]:
     project = Project(user_id=user.id, name="p")
     session.add(project)
     session.flush()
-    run = GenerationRun(project_id=project.id, status=RunStatus.COMPLETED)
+    # Прайсинг v3: цена на уровне run; себестоимость (real_cost_usd) — на задачах,
+    # только для админ-сверки, клиенту не отдаётся.
+    run = GenerationRun(project_id=project.id, status=RunStatus.COMPLETED, duration_seconds=30, price=3170)
     session.add(run)
     session.flush()
-    for stage, cost_usd, price in ((Stage.STORYBOARD, "0.003591", 1), (Stage.VIDEO, "0.500000", 116)):
+    for stage, cost_usd in ((Stage.STORYBOARD, "0.003591"), (Stage.VIDEO, "0.500000")):
         key = task_idempotency_key(run_id=run.id, stage=stage, scene_id=None, input_version=str(uuid.uuid4()))
         session.add(
             Task(
                 run_id=run.id, stage=stage, provider="x", status=TaskStatus.COMPLETED,
-                input_hash=key, idempotency_key=key, cost=200, price=price, real_cost_usd=cost_usd,
+                input_hash=key, idempotency_key=key, real_cost_usd=cost_usd,
             )
         )
     session.commit()
@@ -44,8 +46,8 @@ async def test_run_snapshot_exposes_price_not_cost_price(db_session):
     async with AsyncSessionLocal() as session:
         snapshot = await runs.get_run_snapshot(run_id=run_id, session=session, user_id=user_id)
 
-    assert snapshot.total_price == 117
-    assert {t.price for t in snapshot.tasks} == {1, 116}
+    assert snapshot.price == 3170  # цена ролика в искрах, run-level
+    assert snapshot.duration_seconds == 30
 
     # Ни одного USD-поля и ни одного значения себестоимости в сериализованном ответе.
     payload = snapshot.model_dump_json()
@@ -64,15 +66,21 @@ async def test_admin_still_sees_cost_price(db_session):
     assert COST_USD_MARKER in detail.total_real_cost_usd
 
 
-async def test_pricing_quote_reports_hold_ceiling(db_session):
-    """Клиент должен узнать размер резерва ДО запуска — иначе непонятно, почему
-    с баланса ушло больше, чем в итоге стоил ролик."""
-    from toontales_ai.orchestration.pipeline_async import MAX_ASSUMED_SCENES
-    from toontales_ai.orchestration.pricing import estimate_run_cost
+async def test_pricing_quote_returns_exact_prices_by_duration(db_session):
+    """Прайсинг v3: котировка отдаёт точную цену по длительностям (пресеты + своя).
+    Это финальная цена — резерва нет, столько и спишется на успехе."""
+    from toontales_ai.orchestration.pricing import price_from_duration
 
     quote = await runs.pricing_quote(user_id=uuid.uuid4())
-    assert quote.max_hold == estimate_run_cost(MAX_ASSUMED_SCENES)
-    assert quote.max_hold > 0
+    by_duration = {item.duration_seconds: item.price for item in quote.prices}
+    assert set(by_duration) == {10, 30, 60}
+    for d, p in by_duration.items():
+        assert p == price_from_duration(d)
+
+    # своя длительность добавляется к пресетам
+    quote_custom = await runs.pricing_quote(duration_seconds=45, user_id=uuid.uuid4())
+    durations = {item.duration_seconds for item in quote_custom.prices}
+    assert 45 in durations and {10, 30, 60} <= durations
 
 
 async def test_package_prices_are_public_and_above_cost_price(db_session):

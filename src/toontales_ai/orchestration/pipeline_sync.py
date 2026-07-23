@@ -47,14 +47,11 @@ STAGE_MEDIA_KIND: dict[Stage, MediaKind] = {
     Stage.COMPOSITION: MediaKind.FINAL_RENDER,
 }
 from toontales_ai.orchestration.idempotency import (
-    credit_charge_key,
-    credit_hold_refund_key,
-    credit_release_key,
+    credit_run_charge_key,
     task_idempotency_key,
 )
-from toontales_ai.orchestration.pipeline_async import MAX_ASSUMED_SCENES
 from toontales_ai.orchestration.pipeline_service import plan_next_tasks
-from toontales_ai.orchestration.pricing import price_sparks, stage_hold
+from toontales_ai.orchestration.pricing import scene_count_for_duration
 
 MAX_RETRIES = 3
 
@@ -82,100 +79,51 @@ def _all_scenes_stage_completed(session: Session, run_id: uuid.UUID, stage: Stag
     return completed_count >= scene_count
 
 
-def _settle(session: Session, task: Task) -> None:
-    """Списание после успешной стадии: CHARGE на цену от фактической себестоимости,
-    возврат неизрасходованной части холда на баланс.
+def _charge_run(session: Session, run: GenerationRun) -> None:
+    """Единственное списание за ролик — по успешной COMPOSITION (прайсинг v3).
+    Ровно run.price искр, независимо от фактической себестоимости: перерасход на
+    докрутку сцены наш. Ключ на run — повторная доставка COMPOSITION-колбэка не
+    спишет дважды. Баланс двигаем только при реально вставленной проводке
+    (RETURNING), иначе гонка двух доставок начислила бы списание дважды.
 
-    Холд взят по верхней границе (pricing.STAGE_COST_USD_MAX), поэтому на типовой
-    сцене возвращается заметная доля — это и держит наценку ровно price_markup
-    независимо от длины сцены."""
-    if task.real_cost_usd is None:
-        # Провайдер не вернул usage -> фактической себестоимости нет. Списываем
-        # весь холд: отдать генерацию бесплатно хуже, чем округлить в свою пользу.
-        task.price = task.cost
-    else:
-        fair_price = price_sparks(task.real_cost_usd)
-        if fair_price > task.cost:
-            # Себестоимость вышла за верхнюю границу -> списать больше холда нечем
-            # (баланс уменьшен ровно на cost). Значит наценка на этой задаче ниже
-            # price_markup: либо тариф провайдера вырос и STAGE_COST_USD_MAX
-            # устарел, либо параметры стадии вне ожидаемого диапазона.
-            logger.warning(
-                "task price capped by hold",
-                extra={
-                    "task_id": str(task.id),
-                    "stage": task.stage.value,
-                    "fair_price": fair_price,
-                    "hold": task.cost,
-                },
-            )
-            # Метрика, а не только лог: это единственный автоматический сигнал,
-            # что тариф провайдера ушёл выше нашей верхней границы.
-            metrics.PRICE_CAPPED_BY_HOLD_TOTAL.labels(stage=task.stage.value).inc()
-        task.price = min(fair_price, task.cost)
+    real_cost_usd задач остаётся для админ-сверки маржи (charge vs факт)."""
+    if run.price <= 0:
+        return  # бесплатный ролик (напр. partial rerun) — списывать нечего
 
-    session.execute(
-        pg_insert(CreditTransaction)
-        .values(
-            user_id=_run_user_id(session, task.run_id),
-            run_id=task.run_id,
-            task_id=task.id,
-            type=CreditTransactionType.CHARGE,
-            amount=task.price,
-            idempotency_key=credit_charge_key(task.id),
+    # Блокируем пользователя ДО расчёта суммы: списание считается от баланса под
+    # блокировкой, а не от прочитанного заранее, иначе гонка с другим списанием.
+    user = session.execute(
+        select(User).where(User.id == _run_user_id(session, run.id)).with_for_update()
+    ).scalar_one()
+    # Обычно баланс покрывает цену — start_run проверяет баланс с учётом активных
+    # запусков. Недобор возможен лишь если баланс просел мимо этой проверки
+    # (ручная правка админом). Тогда списываем сколько есть и держим ledger=баланс:
+    # записываем ФАКТИЧЕСКИ списанную сумму, а не run.price. Работу не обрываем.
+    amount = min(run.price, user.credit_balance)
+    if amount < run.price:
+        logger.warning(
+            "run charge capped by balance",
+            extra={"run_id": str(run.id), "price": run.price, "charged": amount},
         )
-        .on_conflict_do_nothing(index_elements=["idempotency_key"])
-    )
+    if amount <= 0:
+        return
 
-    refund = task.cost - task.price
-    if refund > 0:
-        # Тот же контракт, что в _release: баланс двигаем только при реально
-        # вставленной проводке, иначе повторный settle начислил бы возврат дважды.
-        # complete_task держит задачу под FOR UPDATE, но RETURNING-гард дешёв и
-        # снимает зависимость корректности от блокировки выше по стеку.
-        inserted = session.execute(
-            pg_insert(CreditTransaction)
-            .values(
-                user_id=_run_user_id(session, task.run_id),
-                run_id=task.run_id,
-                task_id=task.id,
-                type=CreditTransactionType.RELEASE,
-                amount=refund,
-                idempotency_key=credit_hold_refund_key(task.id),
-            )
-            .on_conflict_do_nothing(index_elements=["idempotency_key"])
-            .returning(CreditTransaction.id)
-        ).scalar_one_or_none()
-        if inserted is not None:
-            user = session.execute(
-                select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()
-            ).scalar_one()
-            user.credit_balance += refund
-
-
-def _release(session: Session, task: Task) -> None:
-    # Баланс поднимаем ТОЛЬКО если RELEASE-проводка реально вставилась (RETURNING).
-    # Без этой связки два reconciler-а, выбравшие одну задачу без FOR UPDATE,
-    # оба прибавили бы холд к балансу, хотя проводка вставится одна — прямое
-    # расхождение баланса с ledger. С RETURNING повторный release — no-op и для
-    # проводки, и для баланса, поэтому функция безопасна независимо от вызывающего.
     inserted = session.execute(
         pg_insert(CreditTransaction)
         .values(
-            user_id=_run_user_id(session, task.run_id),
-            run_id=task.run_id,
-            task_id=task.id,
-            type=CreditTransactionType.RELEASE,
-            amount=task.cost,
-            idempotency_key=credit_release_key(task.id),
+            user_id=user.id,
+            run_id=run.id,
+            task_id=None,
+            type=CreditTransactionType.CHARGE,
+            amount=amount,
+            idempotency_key=credit_run_charge_key(run.id),
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
         .returning(CreditTransaction.id)
     ).scalar_one_or_none()
     if inserted is None:
-        return
-    user = session.execute(select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()).scalar_one()
-    user.credit_balance += task.cost
+        return  # повторная доставка COMPOSITION — уже списано
+    user.credit_balance -= amount
 
 
 def _run_user_id(session: Session, run_id: uuid.UUID) -> uuid.UUID:
@@ -184,9 +132,9 @@ def _run_user_id(session: Session, run_id: uuid.UUID) -> uuid.UUID:
     ).scalar_one()
 
 
-def _create_task_and_hold(session: Session, *, run_id: uuid.UUID, stage: Stage, scene_id: uuid.UUID | None, key: str, cost: int) -> uuid.UUID | None:
+def _create_task(session: Session, *, run_id: uuid.UUID, stage: Stage, scene_id: uuid.UUID | None, key: str) -> uuid.UUID | None:
     """INSERT ... ON CONFLICT DO NOTHING — возвращает id только если строка реально вставлена,
-    чтобы hold/outbox не задваивались при гонке двух join-веток (review.md §10)."""
+    чтобы задача/outbox не задваивались при гонке двух join-веток (review.md §10)."""
     stmt = (
         pg_insert(Task)
         .values(
@@ -199,7 +147,6 @@ def _create_task_and_hold(session: Session, *, run_id: uuid.UUID, stage: Stage, 
             input_snapshot={},
             input_hash=key,
             idempotency_key=key,
-            cost=cost,
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
         .returning(Task.id)
@@ -207,65 +154,12 @@ def _create_task_and_hold(session: Session, *, run_id: uuid.UUID, stage: Stage, 
     return session.execute(stmt).scalar_one_or_none()
 
 
-def _hold_and_enqueue(session: Session, *, task_id: uuid.UUID, run_id: uuid.UUID, cost: int) -> None:
-    user_id = _run_user_id(session, run_id)
-    # SELECT ... FOR UPDATE до insert HOLD: сериализует конкурентные downstream-hold
-    # для одного user_id, чтобы проверка баланса ниже не гонялась с параллельным
-    # списанием (тот же паттерн, что start_run/request_partial_rerun).
-    user = session.execute(select(User).where(User.id == user_id).with_for_update()).scalar_one()
-
-    if user.credit_balance < cost:
-        # P0 (аудит финансовой корректности): start_run/request_partial_rerun
-        # проверяют баланс на старте run по ОЦЕНКЕ (max_budget/estimated_total_cost),
-        # но между стадиями баланс может измениться (несколько run одного user
-        # параллельно, drain друг друга). Раньше здесь ничего не проверялось —
-        # decrement ниже упирался в CheckConstraint("credit_balance >= 0") на
-        # уровне Postgres, IntegrityError не входит в TRANSIENT_ERRORS, вся
-        # транзакция complete_task() откатывалась (включая уже выставленный
-        # task.status=COMPLETED для ПРЕДЫДУЩЕЙ стадии), а Celery-задача падала
-        # необработанной — run зависал в RUNNING навсегда без сигнала пользователю.
-        # Явный FAILED с понятной причиной вместо тихого зависания.
-        task = session.get(Task, task_id)
-        task.status = TaskStatus.FAILED
-        task.error_payload = {
-            "code": "INSUFFICIENT_CREDITS",
-            "detail": f"balance {user.credit_balance} < required {cost}",
-        }
-        task.finished_at = datetime.now(timezone.utc)
-        run = session.get(GenerationRun, run_id)
-        if run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
-            run.status = RunStatus.FAILED
-            run.finished_at = datetime.now(timezone.utc)
-        logger.error(
-            "insufficient credits, task failed",
-            extra={
-                "task_id": str(task_id),
-                "run_id": str(run_id),
-                "required": cost,
-                "balance": user.credit_balance,
-            },
-        )
-        return
-
-    inserted_id = session.execute(
-        pg_insert(CreditTransaction)
-        .values(
-            user_id=user_id,
-            run_id=run_id,
-            task_id=task_id,
-            type=CreditTransactionType.HOLD,
-            amount=cost,
-            idempotency_key=f"hold:{task_id}",
-        )
-        .on_conflict_do_nothing(index_elements=["idempotency_key"])
-        .returning(CreditTransaction.id)
-    ).scalar_one_or_none()
-    if inserted_id is not None:
-        # Баланс списывается только при реально вставленном hold (ON CONFLICT DO
-        # NOTHING защищает от повторного вызова при гонке двух join-веток на
-        # _advance — без этой проверки повторный вызов списал бы дважды).
-        user.credit_balance -= cost
-
+def _enqueue_task(session: Session, *, task_id: uuid.UUID) -> None:
+    """Прайсинг v3: денег на уровне задачи больше нет — резерва нет, баланс не
+    трогается до успешной COMPOSITION. Задача просто ставится в outbox. Проверки
+    баланса между стадиями УБРАНЫ намеренно: работа идёт до конца, не обрывается
+    (списание одно, run-level, на успехе). ON CONFLICT — идемпотентность гонки
+    двух join-веток на _advance."""
     session.execute(
         pg_insert(PipelineOutbox)
         .values(id=uuid.uuid4(), event_type="enqueue_task", aggregate_id=task_id, payload={"task_id": str(task_id)})
@@ -303,11 +197,11 @@ def _advance(session: Session, task: Task) -> None:
         for plan in plans:
             if plan.stage != candidate:
                 continue
-            new_id = _create_task_and_hold(
-                session, run_id=task.run_id, stage=plan.stage, scene_id=plan.scene_id, key=plan.idempotency_key, cost=plan.cost
+            new_id = _create_task(
+                session, run_id=task.run_id, stage=plan.stage, scene_id=plan.scene_id, key=plan.idempotency_key
             )
             if new_id is not None:
-                _hold_and_enqueue(session, task_id=new_id, run_id=task.run_id, cost=plan.cost)
+                _enqueue_task(session, task_id=new_id)
 
 
 def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> None:
@@ -316,7 +210,15 @@ def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> N
     # баг: раньше здесь читался output_snapshot["scenes"], которого никогда не
     # существовало, — раскадровка никогда не создавала Scene/downstream-задачи).
     artifacts = (storyboard_task.output_snapshot or {}).get("artifacts") or []
-    scenes_data = (artifacts[0].get("scenes", []) if artifacts else [])[:MAX_ASSUMED_SCENES]
+    # Число сцен детерминировано выбранной длительностью (прайсинг v3): раскадровка
+    # должна вернуть ровно столько, но обрезаем как страховку от лишних. Legacy-раны
+    # без duration_seconds (0) обрезаются как раньше — по потолку scene_count(0)=1;
+    # такие раны в новой схеме не создаются, ветка на всякий случай.
+    run = session.get(GenerationRun, storyboard_task.run_id)
+    all_scenes = artifacts[0].get("scenes", []) if artifacts else []
+    # duration_seconds=0 — legacy-ран (в новой схеме не создаётся): не обрезаем.
+    scene_cap = scene_count_for_duration(run.duration_seconds) if run.duration_seconds else len(all_scenes)
+    scenes_data = all_scenes[:scene_cap]
     for idx, scene_data in enumerate(scenes_data):
         scene = Scene(
             generation_run_id=storyboard_task.run_id,
@@ -334,11 +236,11 @@ def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> N
             key = task_idempotency_key(
                 run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, input_version=str(scene.id)
             )
-            new_id = _create_task_and_hold(
-                session, run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, key=key, cost=stage_hold(stage)
+            new_id = _create_task(
+                session, run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, key=key
             )
             if new_id is not None:
-                _hold_and_enqueue(session, task_id=new_id, run_id=storyboard_task.run_id, cost=stage_hold(stage))
+                _enqueue_task(session, task_id=new_id)
 
 
 def _materialize_media_assets(session: Session, task: Task, result: ProviderJobResult) -> int:
@@ -464,7 +366,8 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         # предыдущего провала висеть в снапшоте задачи (замечено при e2e-прогоне:
         # COMPOSITION показывал status=completed вместе со старой ошибкой retry).
         task.error_payload = None
-        _settle(session, task)
+        # Прайсинг v3: денег на уровне стадии нет — списание одно, run-level, ниже
+        # на успешной COMPOSITION. real_cost_usd задачи остаётся для админ-сверки.
         if not requires_media_asset:
             _materialize_media_assets(session, task, result)
 
@@ -482,13 +385,15 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
             run = session.get(GenerationRun, task.run_id)
             run.status = RunStatus.COMPLETED
             run.finished_at = datetime.now(timezone.utc)
+            # Единственное списание за ролик — здесь, по факту готового результата.
+            _charge_run(session, run)
 
     elif result.status == ProviderJobStatus.FAILED:
         if task.retry_count >= MAX_RETRIES:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": result.error_code, "detail": result.error_detail}
             task.finished_at = datetime.now(timezone.utc)
-            _release(session, task)
+            # Прайсинг v3: возвращать нечего — на старте баланс не трогали.
             outcome_stage, outcome_status = task.stage.value, "failed"
             outcome_error_code = str(result.error_code) if result.error_code else None
             # Та же находка, зеркально: перманентный провал любой стадии должен
