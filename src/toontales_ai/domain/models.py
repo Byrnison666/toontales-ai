@@ -244,6 +244,10 @@ class CreditTransaction(Base):
     task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
     type: Mapped[CreditTransactionType]
     amount: Mapped[int]
+    # Причина ручной правки баланса админом. Для автоматических проводок пусто:
+    # у hold/charge/release причина очевидна из task_id. Ручное изменение чужих
+    # денег без записанного основания — дыра в аудите.
+    note: Mapped[str | None] = mapped_column(nullable=True)
     idempotency_key: Mapped[str] = mapped_column(unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

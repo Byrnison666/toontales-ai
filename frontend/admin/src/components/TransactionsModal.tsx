@@ -54,6 +54,7 @@ export function TransactionsModal({ user, onClose }: TransactionsModalProps): JS
                   <tr>
                     <th className="px-4 py-3">Тип</th>
                     <th className="px-4 py-3">Сумма</th>
+                    <th className="px-4 py-3">Причина</th>
                     <th className="px-4 py-3">Run ID</th>
                     <th className="px-4 py-3">Дата</th>
                   </tr>
@@ -69,6 +70,9 @@ export function TransactionsModal({ user, onClose }: TransactionsModalProps): JS
                       <td className={`px-4 py-3 font-mono font-semibold ${transaction.amount >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
                         {transaction.amount > 0 ? '+' : ''}{transaction.amount}
                       </td>
+                      <td className="max-w-56 truncate px-4 py-3 text-slate-700" title={transaction.note ?? undefined}>
+                        {transaction.note ?? '—'}
+                      </td>
                       <td className="max-w-48 truncate px-4 py-3 font-mono text-xs text-slate-500" title={transaction.run_id ?? undefined}>
                         {transaction.run_id ?? '—'}
                       </td>
@@ -77,7 +81,7 @@ export function TransactionsModal({ user, onClose }: TransactionsModalProps): JS
                   ))}
                   {transactions.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="px-4 py-10 text-center text-slate-500">Транзакций нет</td>
+                      <td colSpan={5} className="px-4 py-10 text-center text-slate-500">Транзакций нет</td>
                     </tr>
                   ) : null}
                 </tbody>

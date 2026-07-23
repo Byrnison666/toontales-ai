@@ -6,17 +6,19 @@ Read-only обзор системы: пользователи+балансы, ru
 вынесения в отдельный orchestration-слой."""
 
 import uuid
+from typing import Literal
 from datetime import date as date_type
 from datetime import timedelta
 from decimal import Decimal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from toontales_ai.api.deps import get_db_session, require_admin
+from toontales_ai.orchestration import billing
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import RunStatus, Stage, TaskStatus
 from toontales_ai.domain.models import (
@@ -80,10 +82,54 @@ async def list_users(
     )
 
 
+# Потолок на одну ручную операцию — защита от лишнего нуля при вводе.
+# ~3000 роликов по текущему прайсингу: любой законной правки хватит с запасом.
+MAX_BALANCE_EDIT = 10_000_000
+
+
+class AdminBalanceEditRequest(BaseModel):
+    # set — установить точное значение, delta — начислить (>0) или списать (<0).
+    mode: Literal["set", "delta"]
+    amount: int = Field(ge=-MAX_BALANCE_EDIT, le=MAX_BALANCE_EDIT)
+    # Обязательна: ручное изменение чужих денег без основания не должно быть
+    # возможным даже для админа — иначе в ledger нечего предъявить при разборе.
+    note: str = Field(min_length=1, max_length=500)
+    # Задаёт клиент: повтор при ретрае/двойном клике не применится дважды.
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class AdminBalanceResponse(BaseModel):
+    user_id: uuid.UUID
+    credit_balance: int
+
+
+@router.post("/users/{user_id}/balance", response_model=AdminBalanceResponse)
+async def edit_user_balance(
+    user_id: uuid.UUID,
+    body: AdminBalanceEditRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminBalanceResponse:
+    if body.mode == "set" and body.amount < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="balance cannot be set below zero")
+    try:
+        new_balance = await billing.admin_adjust_balance(
+            session,
+            user_id=user_id,
+            mode=body.mode,
+            amount=body.amount,
+            note=body.note,
+            idempotency_key=body.idempotency_key,
+        )
+    except billing.BillingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return AdminBalanceResponse(user_id=user_id, credit_balance=new_balance)
+
+
 class AdminTransactionItem(BaseModel):
     id: uuid.UUID
     type: str
     amount: int
+    note: str | None
     run_id: uuid.UUID | None
     created_at: str
 
@@ -106,7 +152,12 @@ async def user_transactions(
     ).scalars().all()
     return [
         AdminTransactionItem(
-            id=t.id, type=t.type.value, amount=t.amount, run_id=t.run_id, created_at=t.created_at.isoformat()
+            id=t.id,
+            type=t.type.value,
+            amount=t.amount,
+            note=t.note,
+            run_id=t.run_id,
+            created_at=t.created_at.isoformat(),
         )
         for t in rows
     ]

@@ -4,7 +4,7 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { PageHeader } from '../components/PageHeader'
 import { Pagination } from '../components/Pagination'
-import { TopupModal } from '../components/TopupModal'
+import { BalanceModal } from '../components/BalanceModal'
 import { TransactionsModal } from '../components/TransactionsModal'
 import { formatDate, formatInteger } from '../format'
 
@@ -15,7 +15,7 @@ export function UsersPage(): JSX.Element {
   const [offset, setOffset] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
-  const [topupUser, setTopupUser] = useState<AdminUser | null>(null)
+  const [balanceUser, setBalanceUser] = useState<AdminUser | null>(null)
   const [transactionsUser, setTransactionsUser] = useState<AdminUser | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
@@ -42,17 +42,17 @@ export function UsersPage(): JSX.Element {
     return () => window.clearTimeout(timeoutId)
   }, [toast])
 
-  const handleTopupSuccess = (creditBalance: number) => {
-    if (!topupUser) {
+  const handleBalanceSuccess = (creditBalance: number) => {
+    if (!balanceUser) {
       return
     }
-    const userId = topupUser.id
+    const userId = balanceUser.id
     setData((current) => current ? {
       ...current,
       users: current.users.map((user) => user.id === userId ? { ...user, credit_balance: creditBalance } : user),
     } : current)
-    setTopupUser(null)
-    setToast(`Баланс ${topupUser.email} пополнен`)
+    setBalanceUser(null)
+    setToast(`Баланс ${balanceUser.email} обновлён`)
   }
 
   return (
@@ -94,10 +94,10 @@ export function UsersPage(): JSX.Element {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setTopupUser(user)}
+                          onClick={() => setBalanceUser(user)}
                           className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
                         >
-                          Пополнить
+                          Изменить баланс
                         </button>
                       </div>
                     </td>
@@ -115,8 +115,8 @@ export function UsersPage(): JSX.Element {
         </section>
       ) : null}
 
-      {topupUser ? (
-        <TopupModal user={topupUser} onClose={() => setTopupUser(null)} onSuccess={handleTopupSuccess} />
+      {balanceUser ? (
+        <BalanceModal user={balanceUser} onClose={() => setBalanceUser(null)} onSuccess={handleBalanceSuccess} />
       ) : null}
       {transactionsUser ? (
         <TransactionsModal user={transactionsUser} onClose={() => setTransactionsUser(null)} />

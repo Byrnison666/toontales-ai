@@ -54,6 +54,7 @@ export interface Transaction {
   id: string
   type: string
   amount: number
+  note: string | null
   run_id: string | null
   created_at: string
 }
@@ -104,13 +105,15 @@ export interface HealthResponse {
   tasks_by_status: Record<string, number>
 }
 
-export interface TopupRequest {
-  user_id: string
+export interface BalanceEditRequest {
+  // delta — начислить (>0) или списать (<0); set — установить точное значение.
+  mode: 'delta' | 'set'
   amount: number
+  note: string
   idempotency_key: string
 }
 
-export interface TopupResponse {
+export interface BalanceEditResponse {
   user_id: string
   credit_balance: number
 }
@@ -219,8 +222,8 @@ export const adminApi = {
     apiRequest<RunDetails>(`/api/v1/admin/runs/${encodeURIComponent(runId)}`, { signal }),
   getHealth: (signal?: AbortSignal) =>
     apiRequest<HealthResponse>('/api/v1/admin/health', { signal }),
-  topup: (payload: TopupRequest, signal?: AbortSignal) =>
-    apiRequest<TopupResponse>('/api/v1/billing/admin/topup', {
+  editBalance: (userId: string, payload: BalanceEditRequest, signal?: AbortSignal) =>
+    apiRequest<BalanceEditResponse>(`/api/v1/admin/users/${encodeURIComponent(userId)}/balance`, {
       method: 'POST',
       body: JSON.stringify(payload),
       signal,
