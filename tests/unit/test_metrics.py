@@ -25,3 +25,17 @@ def test_normalize_error_code_passes_known_and_collapses_unknown() -> None:
     assert metrics.normalize_error_code("some_random_runway_failure_code_12345") == "other"
     assert metrics.normalize_error_code(None) == "other"
     assert metrics.normalize_error_code("") == "other"
+
+
+def test_refresh_tariff_age_reports_days_since_manual_check():
+    """Метрика — напоминание сверить тариф руками. Если она замрёт, дрейф цен
+    провайдера так и останется незамеченным."""
+    from datetime import date
+
+    from toontales_ai.observability import metrics
+    from toontales_ai.orchestration.real_cost import TARIFF_CHECKED_AT
+
+    metrics.refresh_tariff_age()
+    for provider, checked_at in TARIFF_CHECKED_AT.items():
+        value = metrics.TARIFF_AGE_DAYS.labels(provider=provider)._value.get()
+        assert value == (date.today() - checked_at).days

@@ -113,3 +113,41 @@ override, т.к. на одном хосте (в отличие от отдель
 делить один порт. worker запускается с `--pool=threads` — задачи I/O-bound,
 threads-пул отдаёт Prometheus-метрики из задач в единый REGISTRY без
 multiprocess-обвязки, которую потребовал бы prefork.
+
+## 3. Мониторинг и алерты
+
+Сервисы отдают метрики Prometheus: API — на `/metrics` основного порта,
+worker и beat — на `metrics_port` (9100 внутри контейнера). **Сам Prometheus в
+прод-стек пока не входит**, поэтому правила из `deploy/monitoring/alerts.yml`
+никем не читаются, пока его не поднимут.
+
+Подключение:
+
+```yaml
+# prometheus.yml
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: toontales-api
+    static_configs: [{ targets: ["api:8000"] }]
+  - job_name: toontales-worker
+    static_configs: [{ targets: ["worker:9100", "beat:9100"] }]
+```
+
+Смонтировать `deploy/monitoring/alerts.yml` в `/etc/prometheus/alerts.yml` и
+проверить перед выкаткой: `promtool check rules deploy/monitoring/alerts.yml`.
+
+### Зачем именно эти правила
+
+Тарифы провайдеров захардкожены в `orchestration/real_cost.py`: себестоимость
+не измеряется, а **считается**. Если Runway поднимет цену, наш расчёт не
+изменится ни на цент — маржа просядет молча. Отсюда три независимых сигнала:
+
+| Сигнал | Что означает |
+|---|---|
+| `ProviderPriceDriftDetected` | себестоимость вышла за верхнюю границу холда — тариф уже уехал |
+| `TariffReviewOverdue` | тариф давно не сверяли руками с прайс-листом |
+| `GET /api/v1/admin/provider-spend` | расчётный расход по провайдерам — сверять с инвойсом |
+
+Первые два автоматические, третий требует человека: только инвойс показывает
+реальные деньги.

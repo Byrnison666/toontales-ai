@@ -49,6 +49,19 @@ export function formatCurrency(value: string | null): string {
   })}`
 }
 
+export function formatSparks(value: number | null): string {
+  return value === null ? '—' : `${value.toLocaleString('ru-RU')} ✦`
+}
+
+export function formatMarkup(value: string | null): string {
+  if (value === null) {
+    return '—'
+  }
+
+  const markup = Number(value)
+  return Number.isFinite(markup) ? `×${markup.toFixed(2)}` : '—'
+}
+
 export function formatDate(value: string | null): string {
   if (!value) {
     return '—'

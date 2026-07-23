@@ -81,11 +81,15 @@ export function AppHeader(): JSX.Element {
               key={balance ?? 'loading'}
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1.5 text-xs font-extrabold text-amber-100 sm:text-sm"
-              title="Баланс кредитов"
             >
-              <span aria-hidden="true">✦ </span>
-              {balance === null ? '…' : balance.toLocaleString('ru-RU')}
+              <NavLink
+                to="/topup"
+                className="block rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1.5 text-xs font-extrabold text-amber-100 transition hover:bg-amber-300/20 sm:text-sm"
+                title="Баланс искр — нажми, чтобы пополнить"
+              >
+                <span aria-hidden="true">✦ </span>
+                {balance === null ? '…' : balance.toLocaleString('ru-RU')}
+              </NavLink>
             </motion.div>
             <MagicButton variant="ghost" className="min-h-10 px-3 py-2 text-xs sm:text-sm" onClick={handleLogout}>
               Выйти

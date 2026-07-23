@@ -33,6 +33,9 @@ export interface AdminStats {
   total_real_cost_usd: string
   avg_cost_per_completed_run_usd: string | null
   cost_by_stage_usd: Record<string, string>
+  total_revenue_usd: string
+  total_charged_sparks: number
+  actual_markup: string | null
 }
 
 export interface AdminUser {
@@ -63,6 +66,8 @@ export interface AdminRun {
   trigger: string
   estimated_cost: number
   real_cost_usd: string | null
+  charged_sparks: number
+  actual_markup: string | null
   created_at: string
   finished_at: string | null
 }
@@ -78,6 +83,8 @@ export interface RunTask {
   stage: PipelineStage
   status: TaskStatus
   real_cost_usd: string | null
+  charged_sparks: number | null
+  actual_markup: string | null
   error: Record<string, unknown> | null
 }
 
@@ -86,6 +93,8 @@ export interface RunDetails {
   user_email: string
   status: RunStatus
   total_real_cost_usd: string | null
+  total_charged_sparks: number
+  actual_markup: string | null
   tasks: RunTask[]
   final_render_url: string | null
 }

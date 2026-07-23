@@ -1,4 +1,4 @@
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 # Allowlist кодов ошибок для label PROVIDER_ERRORS_TOTAL: часть error_code
 # приходит сырой из ответа вендора (data.get("errorCode")/failureCode у Runway/
@@ -48,6 +48,16 @@ TASK_REAL_COST_USD_TOTAL = Counter(
     "Cumulative real USD cost of completed tasks",
     ["stage"],
 )
+PRICE_CAPPED_BY_HOLD_TOTAL = Counter(
+    "toontales_price_capped_by_hold_total",
+    "Tasks whose actual cost exceeded the hold ceiling (markup below target)",
+    ["stage"],
+)
+TARIFF_AGE_DAYS = Gauge(
+    "toontales_tariff_age_days",
+    "Days since provider tariff was last manually verified against the price list",
+    ["provider"],
+)
 PROVIDER_ERRORS_TOTAL = Counter(
     "toontales_provider_errors_total",
     "Provider adapter errors",
@@ -58,3 +68,16 @@ RECONCILED_TASKS_TOTAL = Counter(
     "Tasks recovered by reconcile_stale_tasks",
     ["reconciliation_type"],
 )
+
+
+def refresh_tariff_age() -> None:
+    """Пересчитывает возраст тарифов. Вызывать при старте процесса и на скрейпе —
+    Gauge не тикает сам, а без обновления метрика замрёт на значении со старта
+    и алерт «тариф не сверялся» никогда не сработает."""
+    from datetime import date
+
+    from toontales_ai.orchestration.real_cost import TARIFF_CHECKED_AT
+
+    today = date.today()
+    for provider, checked_at in TARIFF_CHECKED_AT.items():
+        TARIFF_AGE_DAYS.labels(provider=provider).set((today - checked_at).days)

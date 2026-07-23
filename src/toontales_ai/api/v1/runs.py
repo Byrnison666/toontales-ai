@@ -1,5 +1,4 @@
 import uuid
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -13,7 +12,10 @@ from toontales_ai.api.v1.schemas import (
     GenerateProjectResponse,
     MediaAssetSnapshot,
     PartialRerunRequest,
+    PricingQuoteResponse,
     RunSnapshotResponse,
+    SparkPackageItem,
+    SparkPackagesResponse,
     SceneSnapshot,
     TaskSnapshot,
     WsTicketResponse,
@@ -22,10 +24,16 @@ from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import Stage
 from toontales_ai.domain.models import GenerationRun, MediaAsset, Project, Scene, Task
 from toontales_ai.orchestration.pipeline_async import (
+    MAX_ASSUMED_SCENES,
     InsufficientCreditsError,
     InvalidPartialRerunError,
     request_partial_rerun,
     start_run,
+)
+from toontales_ai.orchestration.pricing import (
+    SPARK_PACKAGE_SIZES,
+    estimate_run_cost,
+    package_price_rub,
 )
 from toontales_ai.storage.s3 import presigned_get_url
 from toontales_ai.ws.tickets import issue_ticket
@@ -76,6 +84,26 @@ async def generate_project(
     )
 
 
+@router.get("/pricing/packages", response_model=SparkPackagesResponse)
+async def pricing_packages() -> SparkPackagesResponse:
+    """Без авторизации: страница оплаты открыта всем, и оферта обязывает
+    показывать на ней стоимость пакетов."""
+    return SparkPackagesResponse(
+        packages=[
+            SparkPackageItem(sparks=sparks, price_rub=int(package_price_rub(sparks)))
+            for sparks in SPARK_PACKAGE_SIZES
+        ]
+    )
+
+
+@router.get("/pricing/quote", response_model=PricingQuoteResponse)
+async def pricing_quote(user_id: uuid.UUID = Depends(get_current_user_id)) -> PricingQuoteResponse:
+    """Сколько искр будет зарезервировано на генерацию. Нужен клиенту ДО запуска:
+    списание идёт по факту, но блокируется верхняя граница — пользователь должен
+    понимать, почему с баланса ушло больше, чем в итоге стоил ролик."""
+    return PricingQuoteResponse(max_hold=estimate_run_cost(MAX_ASSUMED_SCENES))
+
+
 @router.get("/runs/{run_id}", response_model=RunSnapshotResponse)
 async def get_run_snapshot(
     run_id: uuid.UUID,
@@ -87,8 +115,7 @@ async def get_run_snapshot(
     scenes = (await session.execute(select(Scene).where(Scene.generation_run_id == run_id).order_by(Scene.scene_index))).scalars().all()
     tasks = (await session.execute(select(Task).where(Task.run_id == run_id))).scalars().all()
     assets = (await session.execute(select(MediaAsset).where(MediaAsset.run_id == run_id))).scalars().all()
-    known_real_costs = [task.real_cost_usd for task in tasks if task.real_cost_usd is not None]
-    total_real_cost_usd = sum(known_real_costs, Decimal("0")) if known_real_costs else None
+    total_price = sum(task.price for task in tasks if task.price is not None)
 
     return RunSnapshotResponse(
         run_id=run.id,
@@ -96,7 +123,7 @@ async def get_run_snapshot(
         status=run.status.value,
         trigger=run.trigger.value,
         created_at=run.created_at,
-        total_real_cost_usd=str(total_real_cost_usd) if total_real_cost_usd is not None else None,
+        total_price=total_price,
         scenes=[SceneSnapshot(scene_id=s.id, scene_index=s.scene_index, script_text=s.script_text) for s in scenes],
         tasks=[
             TaskSnapshot(
@@ -106,7 +133,7 @@ async def get_run_snapshot(
                 status=t.status.value,
                 progress_hint=t.status.value,
                 cost=t.cost,
-                real_cost_usd=str(t.real_cost_usd) if t.real_cost_usd is not None else None,
+                price=t.price,
                 error=t.error_payload,
             )
             for t in tasks

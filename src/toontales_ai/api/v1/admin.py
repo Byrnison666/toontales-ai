@@ -6,6 +6,8 @@ Read-only обзор системы: пользователи+балансы, ru
 вынесения в отдельный orchestration-слой."""
 
 import uuid
+from datetime import date as date_type
+from datetime import timedelta
 from decimal import Decimal
 
 import redis.asyncio as redis
@@ -27,6 +29,8 @@ from toontales_ai.domain.models import (
     Task,
     User,
 )
+from toontales_ai.orchestration.pricing import actual_markup, revenue_usd
+from toontales_ai.orchestration.real_cost import STAGE_PROVIDER, TARIFF_CHECKED_AT
 from toontales_ai.storage import db as storage_db
 from toontales_ai.storage.s3 import presigned_get_url
 
@@ -108,6 +112,15 @@ async def user_transactions(
     ]
 
 
+def _markup_str(sparks: int, cost_usd: Decimal | str | None) -> str | None:
+    """Наценка строкой для выдачи. cost_usd приходит из SQL-агрегата, который в
+    зависимости от драйвера отдаёт Decimal или строку — приводим явно."""
+    if cost_usd is None:
+        return None
+    markup = actual_markup(sparks, Decimal(str(cost_usd)))
+    return str(markup) if markup is not None else None
+
+
 # ---------- runs ----------
 
 
@@ -119,6 +132,11 @@ class AdminRunItem(BaseModel):
     trigger: str
     estimated_cost: int
     real_cost_usd: str | None
+    # Списано искр с клиента и фактическая наценка (выручка / себестоимость).
+    # Расхождение с settings.price_markup означает, что тарифы провайдеров
+    # разошлись с STAGE_COST_USD_MAX либо стадия завершилась без usage.
+    charged_sparks: int
+    actual_markup: str | None
     created_at: str
     finished_at: str | None
 
@@ -138,12 +156,16 @@ async def list_runs(
     # real_cost_usd рана = сумма Task.real_cost_usd по его задачам (тот же смысл,
     # что total_real_cost_usd в пользовательском GET /runs/{id}).
     cost_subq = (
-        select(Task.run_id, func.sum(Task.real_cost_usd).label("real_cost"))
+        select(
+            Task.run_id,
+            func.sum(Task.real_cost_usd).label("real_cost"),
+            func.coalesce(func.sum(Task.price), 0).label("charged"),
+        )
         .group_by(Task.run_id)
         .subquery()
     )
     base = (
-        select(GenerationRun, User.email, cost_subq.c.real_cost)
+        select(GenerationRun, User.email, cost_subq.c.real_cost, cost_subq.c.charged)
         .join(Project, Project.id == GenerationRun.project_id)
         .join(User, User.id == Project.user_id)
         .outerjoin(cost_subq, cost_subq.c.run_id == GenerationRun.id)
@@ -173,10 +195,12 @@ async def list_runs(
                 trigger=run.trigger.value,
                 estimated_cost=run.estimated_cost,
                 real_cost_usd=str(real_cost) if real_cost is not None else None,
+                charged_sparks=charged or 0,
+                actual_markup=_markup_str(charged or 0, real_cost),
                 created_at=run.created_at.isoformat(),
                 finished_at=run.finished_at.isoformat() if run.finished_at else None,
             )
-            for run, email, real_cost in rows
+            for run, email, real_cost, charged in rows
         ],
         total=total,
     )
@@ -188,6 +212,8 @@ class AdminTaskItem(BaseModel):
     stage: str
     status: str
     real_cost_usd: str | None
+    charged_sparks: int | None
+    actual_markup: str | None
     error: dict | None
 
 
@@ -196,6 +222,8 @@ class AdminRunDetail(BaseModel):
     user_email: str
     status: str
     total_real_cost_usd: str | None
+    total_charged_sparks: int
+    actual_markup: str | None
     tasks: list[AdminTaskItem]
     final_render_url: str | None
 
@@ -216,7 +244,9 @@ async def run_detail(run_id: uuid.UUID, session: AsyncSession = Depends(get_db_s
 
     tasks = (await session.execute(select(Task).where(Task.run_id == run_id))).scalars().all()
     known_costs = [t.real_cost_usd for t in tasks if t.real_cost_usd is not None]
-    total = str(sum(known_costs, Decimal("0"))) if known_costs else None
+    total_cost = sum(known_costs, Decimal("0")) if known_costs else None
+    total = str(total_cost) if total_cost is not None else None
+    total_charged = sum(t.price for t in tasks if t.price is not None)
 
     final_asset = (
         await session.execute(
@@ -230,6 +260,8 @@ async def run_detail(run_id: uuid.UUID, session: AsyncSession = Depends(get_db_s
         user_email=email,
         status=run.status.value,
         total_real_cost_usd=total,
+        total_charged_sparks=total_charged,
+        actual_markup=_markup_str(total_charged, total_cost),
         tasks=[
             AdminTaskItem(
                 id=t.id,
@@ -237,6 +269,8 @@ async def run_detail(run_id: uuid.UUID, session: AsyncSession = Depends(get_db_s
                 stage=t.stage.value,
                 status=t.status.value,
                 real_cost_usd=str(t.real_cost_usd) if t.real_cost_usd is not None else None,
+                charged_sparks=t.price,
+                actual_markup=_markup_str(t.price, t.real_cost_usd) if t.price is not None else None,
                 error=t.error_payload,
             )
             for t in tasks
@@ -256,6 +290,12 @@ class AdminStatsResponse(BaseModel):
     total_real_cost_usd: str
     avg_cost_per_completed_run_usd: str | None
     cost_by_stage_usd: dict[str, str]
+    # Выручка (расчётная: списанные искры по цене продажи) и фактическая наценка
+    # по всей базе — сверка с settings.price_markup. Расчётная, а не фактическая:
+    # искры, начисленные админом через billing.topup, никто не оплачивал.
+    total_revenue_usd: str
+    total_charged_sparks: int
+    actual_markup: str | None
 
 
 @router.get("/stats", response_model=AdminStatsResponse)
@@ -287,6 +327,10 @@ async def stats(session: AsyncSession = Depends(get_db_session)) -> AdminStatsRe
         else None
     )
 
+    total_charged = (
+        await session.execute(select(func.coalesce(func.sum(Task.price), 0)))
+    ).scalar_one()
+
     stage_rows = (
         await session.execute(
             select(Task.stage, func.coalesce(func.sum(Task.real_cost_usd), 0)).group_by(Task.stage)
@@ -302,6 +346,74 @@ async def stats(session: AsyncSession = Depends(get_db_session)) -> AdminStatsRe
         total_real_cost_usd=str(total_cost_dec),
         avg_cost_per_completed_run_usd=avg_cost,
         cost_by_stage_usd=cost_by_stage,
+        total_revenue_usd=str(revenue_usd(total_charged).quantize(Decimal("0.000001"))),
+        total_charged_sparks=total_charged,
+        actual_markup=_markup_str(total_charged, total_cost_dec),
+    )
+
+
+# ---------- сверка с инвойсами провайдеров ----------
+
+
+class ProviderSpendItem(BaseModel):
+    provider: str
+    estimated_spend_usd: str
+    tasks: int
+    tariff_checked_at: str | None
+    tariff_age_days: int | None
+
+
+class ProviderSpendResponse(BaseModel):
+    """Расчётный расход по провайдерам за период — то, что нужно сверить с их
+    инвойсом. Расхождение означает, что тариф в real_cost.py разошёлся с реальным
+    прайсом, и наценка на самом деле не та, что показывает дашборд."""
+
+    since: str
+    until: str
+    providers: list[ProviderSpendItem]
+
+
+@router.get("/provider-spend", response_model=ProviderSpendResponse)
+async def provider_spend(
+    since: date_type,
+    until: date_type,
+    session: AsyncSession = Depends(get_db_session),
+) -> ProviderSpendResponse:
+    if since > until:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="since must not be after until")
+
+    rows = (
+        await session.execute(
+            select(Task.stage, func.coalesce(func.sum(Task.real_cost_usd), 0), func.count())
+            .where(Task.finished_at >= since, Task.finished_at < until + timedelta(days=1))
+            .group_by(Task.stage)
+        )
+    ).all()
+
+    by_provider: dict[str, tuple[Decimal, int]] = {}
+    for stage, spend, count in rows:
+        provider = STAGE_PROVIDER[stage]
+        prev_spend, prev_count = by_provider.get(provider, (Decimal("0"), 0))
+        by_provider[provider] = (prev_spend + Decimal(str(spend)), prev_count + count)
+
+    today = date_type.today()
+    return ProviderSpendResponse(
+        since=since.isoformat(),
+        until=until.isoformat(),
+        providers=[
+            ProviderSpendItem(
+                provider=provider,
+                estimated_spend_usd=str(spend.quantize(Decimal("0.000001"))),
+                tasks=count,
+                tariff_checked_at=(
+                    TARIFF_CHECKED_AT[provider].isoformat() if provider in TARIFF_CHECKED_AT else None
+                ),
+                tariff_age_days=(
+                    (today - TARIFF_CHECKED_AT[provider]).days if provider in TARIFF_CHECKED_AT else None
+                ),
+            )
+            for provider, (spend, count) in sorted(by_provider.items())
+        ],
     )
 
 

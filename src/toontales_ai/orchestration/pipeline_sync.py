@@ -48,12 +48,13 @@ STAGE_MEDIA_KIND: dict[Stage, MediaKind] = {
 }
 from toontales_ai.orchestration.idempotency import (
     credit_charge_key,
+    credit_hold_refund_key,
     credit_release_key,
     task_idempotency_key,
 )
 from toontales_ai.orchestration.pipeline_async import MAX_ASSUMED_SCENES
 from toontales_ai.orchestration.pipeline_service import plan_next_tasks
-from toontales_ai.orchestration.pricing import STAGE_COST
+from toontales_ai.orchestration.pricing import price_sparks, stage_hold
 
 MAX_RETRIES = 3
 
@@ -81,20 +82,69 @@ def _all_scenes_stage_completed(session: Session, run_id: uuid.UUID, stage: Stag
     return completed_count >= scene_count
 
 
-def _charge(session: Session, task: Task) -> None:
-    stmt = (
+def _settle(session: Session, task: Task) -> None:
+    """Списание после успешной стадии: CHARGE на цену от фактической себестоимости,
+    возврат неизрасходованной части холда на баланс.
+
+    Холд взят по верхней границе (pricing.STAGE_COST_USD_MAX), поэтому на типовой
+    сцене возвращается заметная доля — это и держит наценку ровно price_markup
+    независимо от длины сцены."""
+    if task.real_cost_usd is None:
+        # Провайдер не вернул usage -> фактической себестоимости нет. Списываем
+        # весь холд: отдать генерацию бесплатно хуже, чем округлить в свою пользу.
+        task.price = task.cost
+    else:
+        fair_price = price_sparks(task.real_cost_usd)
+        if fair_price > task.cost:
+            # Себестоимость вышла за верхнюю границу -> списать больше холда нечем
+            # (баланс уменьшен ровно на cost). Значит наценка на этой задаче ниже
+            # price_markup: либо тариф провайдера вырос и STAGE_COST_USD_MAX
+            # устарел, либо параметры стадии вне ожидаемого диапазона.
+            logger.warning(
+                "task price capped by hold",
+                extra={
+                    "task_id": str(task.id),
+                    "stage": task.stage.value,
+                    "fair_price": fair_price,
+                    "hold": task.cost,
+                },
+            )
+            # Метрика, а не только лог: это единственный автоматический сигнал,
+            # что тариф провайдера ушёл выше нашей верхней границы.
+            metrics.PRICE_CAPPED_BY_HOLD_TOTAL.labels(stage=task.stage.value).inc()
+        task.price = min(fair_price, task.cost)
+
+    session.execute(
         pg_insert(CreditTransaction)
         .values(
             user_id=_run_user_id(session, task.run_id),
             run_id=task.run_id,
             task_id=task.id,
             type=CreditTransactionType.CHARGE,
-            amount=task.cost,
+            amount=task.price,
             idempotency_key=credit_charge_key(task.id),
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
     )
-    session.execute(stmt)
+
+    refund = task.cost - task.price
+    if refund > 0:
+        session.execute(
+            pg_insert(CreditTransaction)
+            .values(
+                user_id=_run_user_id(session, task.run_id),
+                run_id=task.run_id,
+                task_id=task.id,
+                type=CreditTransactionType.RELEASE,
+                amount=refund,
+                idempotency_key=credit_hold_refund_key(task.id),
+            )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+        )
+        user = session.execute(
+            select(User).where(User.id == _run_user_id(session, task.run_id)).with_for_update()
+        ).scalar_one()
+        user.credit_balance += refund
 
 
 def _release(session: Session, task: Task) -> None:
@@ -272,10 +322,10 @@ def _materialize_scenes_and_fanout(session: Session, storyboard_task: Task) -> N
                 run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, input_version=str(scene.id)
             )
             new_id = _create_task_and_hold(
-                session, run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, key=key, cost=STAGE_COST[stage]
+                session, run_id=storyboard_task.run_id, stage=stage, scene_id=scene.id, key=key, cost=stage_hold(stage)
             )
             if new_id is not None:
-                _hold_and_enqueue(session, task_id=new_id, run_id=storyboard_task.run_id, cost=STAGE_COST[stage])
+                _hold_and_enqueue(session, task_id=new_id, run_id=storyboard_task.run_id, cost=stage_hold(stage))
 
 
 def _materialize_media_assets(session: Session, task: Task, result: ProviderJobResult) -> int:
@@ -384,7 +434,7 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
         # предыдущего провала висеть в снапшоте задачи (замечено при e2e-прогоне:
         # COMPOSITION показывал status=completed вместе со старой ошибкой retry).
         task.error_payload = None
-        _charge(session, task)
+        _settle(session, task)
         if not requires_media_asset:
             _materialize_media_assets(session, task, result)
 

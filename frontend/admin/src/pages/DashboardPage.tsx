@@ -11,7 +11,7 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { PageHeader } from '../components/PageHeader'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatCurrency, formatInteger, stageLabels } from '../format'
+import { formatCurrency, formatInteger, formatMarkup, formatSparks, stageLabels } from '../format'
 
 interface MetricCardProps {
   label: string
@@ -68,12 +68,18 @@ export function DashboardPage(): JSX.Element {
     <div className="space-y-8">
       <PageHeader title="Дашборд" description="Ключевые показатели и структура расходов сервиса." />
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label="Ключевые показатели">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Ключевые показатели">
         <MetricCard label="Всего пользователей" value={formatInteger(stats.users_total)} />
         <MetricCard label="Всего роликов" value={formatInteger(stats.runs_total)} />
         <MetricCard label="Завершённых роликов" value={formatInteger(stats.completed_runs)} />
-        <MetricCard label="Суммарная себестоимость" value={formatCurrency(stats.total_real_cost_usd)} accent />
         <MetricCard label="Средняя себестоимость" value={formatCurrency(stats.avg_cost_per_completed_run_usd)} />
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Экономика">
+        <MetricCard label="Суммарная себестоимость" value={formatCurrency(stats.total_real_cost_usd)} />
+        <MetricCard label="Выручка нетто" value={formatCurrency(stats.total_revenue_usd)} />
+        <MetricCard label="Списано с клиентов" value={formatSparks(stats.total_charged_sparks)} />
+        <MetricCard label="Фактическая наценка" value={formatMarkup(stats.actual_markup)} accent />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,1fr)]">

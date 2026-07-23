@@ -16,7 +16,7 @@ export const requisites = {
 } as const
 
 // Дата последней редакции оферты — обновлять при изменении текста.
-export const offerRevisionDate = '22 июля 2026 г.'
+export const offerRevisionDate = '23 июля 2026 г.'
 
 // Дата последней редакции политики конфиденциальности.
 export const privacyRevisionDate = '23 июля 2026 г.'

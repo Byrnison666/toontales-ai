@@ -17,14 +17,36 @@ class GenerateProjectResponse(BaseModel):
     max_budget: int
 
 
+class SparkPackageItem(BaseModel):
+    sparks: int
+    price_rub: int
+
+
+class SparkPackagesResponse(BaseModel):
+    """Прайс пакетов искр. Публичный: оферта обещает показывать стоимость на
+    странице оплаты, которая доступна без входа в аккаунт."""
+
+    packages: list[SparkPackageItem]
+
+
+class PricingQuoteResponse(BaseModel):
+    """Верхняя граница резерва на генерацию, в искрах. Фактическое списание
+    считается по себестоимости стадий и обычно заметно ниже."""
+
+    max_hold: int
+
+
 class TaskSnapshot(BaseModel):
     task_id: uuid.UUID
     scene_id: uuid.UUID | None
     stage: str
     status: str
     progress_hint: str
+    # Цена в искрах: cost — заблокированный холд, price — фактическое списание
+    # (None, пока задача не завершилась). Себестоимость в USD клиенту не отдаётся,
+    # она есть только в админской выдаче (api/v1/admin.py).
     cost: int
-    real_cost_usd: str | None
+    price: int | None
     error: dict | None
 
 
@@ -50,7 +72,8 @@ class RunSnapshotResponse(BaseModel):
     status: str
     trigger: str
     created_at: datetime
-    total_real_cost_usd: str | None
+    # Сколько искр реально списано за run на текущий момент (сумма Task.price).
+    total_price: int
     scenes: list[SceneSnapshot]
     tasks: list[TaskSnapshot]
     assets: list[MediaAssetSnapshot]

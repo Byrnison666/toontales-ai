@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from toontales_ai.domain.enums import STAGE_IMMEDIATE_NEXT, STAGE_PREDECESSORS, Stage
 from toontales_ai.orchestration.idempotency import task_idempotency_key
-from toontales_ai.orchestration.pricing import STAGE_COST
+from toontales_ai.orchestration.pricing import stage_hold
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +47,7 @@ def plan_next_tasks(
                 stage=candidate,
                 scene_id=candidate_scene_id,
                 idempotency_key=key,
-                cost=STAGE_COST[candidate],
+                cost=stage_hold(candidate),
             )
         )
     return plans

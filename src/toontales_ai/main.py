@@ -76,6 +76,9 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/metrics")
 async def prometheus_metrics() -> Response:
+    # Возраст тарифов пересчитываем на скрейпе: Gauge не тикает сам, а значение
+    # со старта процесса замерло бы навсегда и алерт не сработал бы.
+    metrics.refresh_tariff_age()
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { MagicButton } from '../components/MagicButton'
 import { MagicLoader } from '../components/MagicLoader'
@@ -24,6 +24,7 @@ export function CreatePage(): JSX.Element {
   const [scriptText, setScriptText] = useState('')
   const [balance, setBalance] = useState<number | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(true)
+  const [maxHold, setMaxHold] = useState<number | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -34,6 +35,14 @@ export function CreatePage(): JSX.Element {
 
   useEffect(() => {
     let active = true
+    // Резерв не блокирует запуск и не должен ронять форму, если запрос не прошёл:
+    // без него просто не покажем точную цифру.
+    void api
+      .getPricingQuote()
+      .then((quote) => {
+        if (active) setMaxHold(quote.max_hold)
+      })
+      .catch(() => undefined)
     void api
       .getBalance()
       .then((response) => {
@@ -142,7 +151,10 @@ export function CreatePage(): JSX.Element {
               className="mt-6 rounded-2xl border border-amber-200/25 bg-amber-200/[0.07] p-4 text-sm leading-relaxed text-amber-100"
             >
               На балансе пока нет искр. Каждый ролик — это настоящая работа наших волшебников, поэтому
-              запуск открывается после пополнения баланса. Напиши нам — и мы зажжём для тебя первые искры.
+              запуск открывается после пополнения баланса.{' '}
+              <Link to="/topup" className="font-bold underline">
+                Посмотреть пакеты
+              </Link>
             </motion.div>
           )}
 
@@ -189,8 +201,14 @@ export function CreatePage(): JSX.Element {
               </motion.p>
             )}
             <div className="my-4 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
-            <p className="text-sm leading-relaxed text-violet-300">
-              Примерная стоимость появится после анализа сюжета. Запуск не превысит бюджет, рассчитанный сервером.
+            <p className="text-sm font-semibold text-amber-100">
+              {maxHold === null
+                ? 'Резервируем часть баланса на время создания'
+                : `Резервируем до ${maxHold.toLocaleString('ru-RU')} ✦`}
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-violet-300">
+              Это не цена, а запас на самый длинный ролик. Спишем только за то, что реально
+              получилось, остальное сразу вернём на баланс.
             </p>
           </section>
           <section className="rounded-3xl border border-cyan-300/15 bg-cyan-300/[0.055] p-5">

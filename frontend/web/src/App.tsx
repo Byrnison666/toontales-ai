@@ -11,6 +11,7 @@ const AuthPage = lazy(() => import('./pages/AuthPage').then((module) => ({ defau
 const CreatePage = lazy(() => import('./pages/CreatePage').then((module) => ({ default: module.CreatePage })))
 const RunPage = lazy(() => import('./pages/RunPage').then((module) => ({ default: module.RunPage })))
 const GalleryPage = lazy(() => import('./pages/GalleryPage').then((module) => ({ default: module.GalleryPage })))
+const TopupPage = lazy(() => import('./pages/TopupPage').then((module) => ({ default: module.TopupPage })))
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then((module) => ({ default: module.NotFoundPage })))
 const OfferPage = lazy(() => import('./pages/OfferPage').then((module) => ({ default: module.OfferPage })))
 const ContactsPage = lazy(() => import('./pages/ContactsPage').then((module) => ({ default: module.ContactsPage })))
@@ -38,6 +39,7 @@ export function App(): JSX.Element {
               <Route path="/create" element={<CreatePage />} />
               <Route path="/runs/:runId" element={<RunPage />} />
               <Route path="/gallery" element={<GalleryPage />} />
+              <Route path="/topup" element={<TopupPage />} />
             </Route>
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

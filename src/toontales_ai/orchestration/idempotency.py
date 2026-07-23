@@ -30,6 +30,14 @@ def credit_release_key(task_id: uuid.UUID) -> str:
     return f"release:{task_id}"
 
 
+def credit_hold_refund_key(task_id: uuid.UUID) -> str:
+    """Возврат неиспользованной части холда после успешной стадии. Отдельный ключ
+    от credit_release_key: тот возвращает весь холд при провале задачи, и одна
+    задача не может пройти оба пути, но ключи обязаны различаться — иначе
+    ON CONFLICT DO NOTHING проглотит вторую операцию как дубль."""
+    return f"hold_refund:{task_id}"
+
+
 def input_hash(payload: dict) -> str:
     import json
 

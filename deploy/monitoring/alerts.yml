@@ -1,0 +1,77 @@
+# Prometheus alerting rules для ToonTales.
+#
+# ВНИМАНИЕ: Prometheus в прод-стек (docker-compose.prod.yml) пока не входит —
+# сервисы только отдают /metrics. Этот файл готов к подключению, но сам по себе
+# ничего не делает: без запущенного Prometheus правила никем не читаются.
+# Подключение — см. deploy/README.md, раздел «Мониторинг».
+#
+# Группа margin_guard — про то, чего не видно в коде: наши тарифы провайдеров
+# захардкожены (orchestration/real_cost.py), и рост цен у провайдера НЕ меняет
+# наш расчёт себестоимости. Маржа проседает молча. Эти правила — единственная
+# автоматика, которая об этом скажет.
+
+groups:
+  - name: margin_guard
+    rules:
+      - alert: ProviderPriceDriftDetected
+        # Фактическая себестоимость задачи превысила верхнюю границу холда.
+        # Значит либо тариф провайдера вырос, либо параметры стадии вышли за
+        # ожидаемый диапазон. В обоих случаях наценка на этих задачах ниже
+        # заданной: списать больше холда нечем.
+        expr: increase(toontales_price_capped_by_hold_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Себестоимость {{ $labels.stage }} вышла за верхнюю границу холда"
+          description: >-
+            Списание зажато холдом — наценка ниже целевой. Сверить тариф провайдера
+            с константами в orchestration/real_cost.py и поднять
+            STAGE_COST_USD_MAX для этой стадии.
+
+      - alert: TariffReviewOverdue
+        # Тариф давно не сверяли с прайс-листом руками. Само по себе не инцидент,
+        # но чем дольше, тем выше шанс, что расчёт себестоимости уже врёт.
+        expr: toontales_tariff_age_days > 90
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Тариф {{ $labels.provider }} не сверялся {{ $value | humanize }} дней"
+          description: >-
+            Открыть прайс провайдера, сверить с orchestration/real_cost.py и
+            обновить TARIFF_CHECKED_AT вместе с цифрами. Расхождение расчёта с
+            инвойсом проверяется через GET /api/v1/admin/provider-spend.
+
+      - alert: TariffReviewCriticallyOverdue
+        expr: toontales_tariff_age_days > 180
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Тариф {{ $labels.provider }} не сверялся полгода"
+          description: >-
+            Расчёт себестоимости и, следовательно, вся отчётность по наценке
+            больше не заслуживают доверия.
+
+  - name: pipeline_health
+    rules:
+      - alert: ProviderErrorRateHigh
+        expr: sum(rate(toontales_provider_errors_total[15m])) by (stage) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки провайдера на стадии {{ $labels.stage }}"
+          description: "Более 6 ошибок в минуту в течение 10 минут."
+
+      - alert: TasksStuckAndReconciled
+        # Реконсиляция чинит зависшие задачи — это норма как страховка, но
+        # регулярные срабатывания означают, что где-то теряются колбэки.
+        expr: increase(toontales_reconciled_tasks_total[1h]) > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Реконсиляция вытаскивает много задач ({{ $labels.reconciliation_type }})"
+          description: "Проверить доставку webhook/poll от провайдеров."

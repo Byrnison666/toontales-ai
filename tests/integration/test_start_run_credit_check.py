@@ -9,7 +9,7 @@ import pytest
 
 from toontales_ai.domain.models import Project, User
 from toontales_ai.orchestration.pipeline_async import MAX_ASSUMED_SCENES, InsufficientCreditsError, start_run
-from toontales_ai.orchestration.pricing import STAGE_COST, estimate_run_cost
+from toontales_ai.orchestration.pricing import estimate_run_cost, stage_hold
 from toontales_ai.storage.db import AsyncSessionLocal
 
 
@@ -26,14 +26,14 @@ def _seed_user_and_project(session, *, credit_balance: int):
 
 async def test_start_run_rejects_balance_sufficient_only_for_first_stage(db_session):
     """P0 (аудит финансовой корректности): раньше здесь проверялась только
-    STAGE_COST[STORYBOARD] (50), а не полная оценка run (max_budget, ~1680 на
-    6 сцен) — пользователь с балансом между этими двумя цифрами мог СТАРТОВАТЬ
+    холд одной стадии STORYBOARD, а не полный холд run (max_budget) —
+    пользователь с балансом между этими двумя цифрами мог СТАРТОВАТЬ
     run, который не сможет оплатить на 2-3 стадии (см. test_credit_and_
     duplicate_delivery.test_hold_and_enqueue_fails_task_explicitly_when_
     balance_insufficient для того, что происходит дальше)."""
     from toontales_ai.domain.enums import Stage
 
-    storyboard_cost = STAGE_COST[Stage.STORYBOARD]
+    storyboard_cost = stage_hold(Stage.STORYBOARD)
     max_budget = estimate_run_cost(MAX_ASSUMED_SCENES)
     assert storyboard_cost < max_budget  # sanity: сценарий вообще имеет смысл проверять
 
@@ -57,4 +57,4 @@ async def test_start_run_succeeds_with_full_budget(db_session):
     assert run.max_budget == max_budget
 
     db_session.refresh(user)
-    assert user.credit_balance == max_budget - STAGE_COST[Stage.STORYBOARD]
+    assert user.credit_balance == max_budget - stage_hold(Stage.STORYBOARD)

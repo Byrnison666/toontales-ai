@@ -31,6 +31,19 @@ export interface GenerateResponse {
   max_budget: number
 }
 
+export interface PricingQuote {
+  max_hold: number
+}
+
+export interface SparkPackage {
+  sparks: number
+  price_rub: number
+}
+
+export interface SparkPackages {
+  packages: SparkPackage[]
+}
+
 export interface RunScene {
   scene_id: string
   scene_index: number
@@ -44,7 +57,7 @@ export interface RunTask {
   status: string
   progress_hint: number | null
   cost: number
-  real_cost_usd: string | null
+  price: number | null
   error: unknown
 }
 
@@ -61,7 +74,7 @@ export interface RunSnapshot {
   status: RunStatus
   trigger: string
   created_at: string
-  total_real_cost_usd: string | null
+  total_price: number
   scenes: RunScene[]
   tasks: RunTask[]
   assets: RunAsset[]
@@ -200,6 +213,14 @@ export const api = {
     return request<WsTicket>(`/runs/${encodeURIComponent(runId)}/ws-ticket`, {
       method: 'POST',
     })
+  },
+
+  getPricingQuote(): Promise<PricingQuote> {
+    return request<PricingQuote>('/pricing/quote')
+  },
+
+  getSparkPackages(): Promise<SparkPackages> {
+    return request<SparkPackages>('/pricing/packages')
   },
 
   getBalance(): Promise<BalanceResponse> {

@@ -4,7 +4,7 @@ import { adminApi, getApiErrorMessage, isAbortError, type RunDetails } from '../
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatCurrency, stageLabels } from '../format'
+import { formatCurrency, formatMarkup, formatSparks, stageLabels } from '../format'
 
 export function RunDetailsPage(): JSX.Element {
   const { id } = useParams<{ id: string }>()
@@ -52,9 +52,19 @@ export function RunDetailsPage(): JSX.Element {
             </div>
             <p className="mt-2 truncate font-mono text-xs text-slate-400" title={run.id}>{run.id}</p>
           </div>
-          <div className="shrink-0 sm:text-right">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Суммарная себестоимость</p>
-            <p className="mt-1 font-mono text-2xl font-bold text-slate-950">{formatCurrency(run.total_real_cost_usd)}</p>
+          <div className="flex shrink-0 gap-8 sm:text-right">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Себестоимость</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-slate-950">{formatCurrency(run.total_real_cost_usd)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Списано</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-slate-950">{formatSparks(run.total_charged_sparks)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Наценка</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-indigo-600">{formatMarkup(run.actual_markup)}</p>
+            </div>
           </div>
         </div>
       </div>
@@ -76,6 +86,8 @@ export function RunDetailsPage(): JSX.Element {
                 <div className="flex items-center gap-4">
                   <StatusBadge status={task.status} kind="task" />
                   <span className="min-w-24 text-right font-mono font-semibold text-slate-800">{formatCurrency(task.real_cost_usd)}</span>
+                  <span className="min-w-20 text-right font-mono font-semibold text-slate-800">{formatSparks(task.charged_sparks)}</span>
+                  <span className="min-w-16 text-right font-mono font-semibold text-indigo-600">{formatMarkup(task.actual_markup)}</span>
                 </div>
               </div>
               {task.error ? (

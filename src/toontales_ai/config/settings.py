@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -84,6 +85,20 @@ class Settings(BaseSettings):
     # сюжета, не ПДн, поэтому прокси не нарушает локализацию 152-ФЗ. Пусто = прямое
     # соединение (для окружений без гео-блока).
     anthropic_proxy_url: str = ""
+
+    # Прайсинг. Искра — единица СЕБЕСТОИМОСТИ: списание с баланса идёт ровно по
+    # затратам провайдерам (orchestration/real_cost.py), один в один, без наценки.
+    # Наценка берётся один раз — в цене пакета искр (pricing.SPARK_PACKAGES).
+    # Умножать на price_markup ещё и при списании нельзя: получится markup².
+    spark_cost_usd: Decimal = Decimal("0.001")
+    price_markup: Decimal = Decimal("3")
+
+    # Себестоимость номинирована в USD, а пакеты продаются за рубли, поэтому
+    # движение курса съедает маржу. Курс фиксируем и закладываем буфер на его
+    # рост; пересматривать вместе с тарифами провайдеров (см. real_cost.py).
+    # Источник: ЦБ РФ, 2026-07-24.
+    usd_rub_rate: Decimal = Decimal("78.4049")
+    usd_rub_buffer: Decimal = Decimal("0.15")
 
 
 @lru_cache

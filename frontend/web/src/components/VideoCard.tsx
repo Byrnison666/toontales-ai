@@ -10,10 +10,9 @@ interface VideoCardProps {
   unavailable?: boolean
 }
 
-function formatCost(value: string | null | undefined): string {
-  if (!value) return 'Считается'
-  const numericValue = Number(value)
-  return Number.isFinite(numericValue) ? `$${numericValue.toFixed(2)}` : value
+function formatPrice(value: number | null | undefined): string {
+  if (value === null || value === undefined) return 'Считается'
+  return `${value.toLocaleString('ru-RU')} ✦`
 }
 
 function formatDate(value: string): string {
@@ -82,7 +81,7 @@ export function VideoCard({ run, snapshot, unavailable = false }: VideoCardProps
             <time dateTime={run.created_at}>
               {formatDate(run.created_at)}
             </time>
-            <span className="font-bold text-amber-100">{unavailable ? 'Недоступен' : formatCost(snapshot?.total_real_cost_usd)}</span>
+            <span className="font-bold text-amber-100">{unavailable ? 'Недоступен' : formatPrice(snapshot?.total_price)}</span>
           </div>
         </div>
       </Link>

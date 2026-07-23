@@ -21,7 +21,7 @@ from toontales_ai.domain.enums import (
 from toontales_ai.adapters.moderation import get_moderation_adapter, moderate_text_or_raise
 from toontales_ai.domain.models import CreditTransaction, GenerationRun, MediaAsset, PipelineOutbox, Scene, Task, User
 from toontales_ai.orchestration.idempotency import credit_hold_key, task_idempotency_key
-from toontales_ai.orchestration.pricing import STAGE_COST, estimate_run_cost
+from toontales_ai.orchestration.pricing import estimate_run_cost, stage_hold
 
 MAX_ASSUMED_SCENES = 6  # ориентир из v2.md: "до 5-6 сцен на 30-секундный ролик"
 
@@ -50,7 +50,7 @@ async def start_run(
     await moderate_text_or_raise(get_moderation_adapter(), script_text)
 
     max_budget = estimate_run_cost(MAX_ASSUMED_SCENES)
-    storyboard_cost = STAGE_COST[Stage.STORYBOARD]
+    storyboard_cost = stage_hold(Stage.STORYBOARD)
 
     # SELECT ... FOR UPDATE на баланс пользователя перед hold (review.md §4).
     user = (
@@ -262,8 +262,8 @@ async def request_partial_rerun(
     # холдируется инкрементально в pipeline_sync._advance по мере прогрессии
     # (иначе downstream-стадии задвоили бы hold: один здесь, второй в _advance).
     stages_to_rerun = (stage, *STAGE_DOWNSTREAM.get(stage, ()))
-    estimated_total_cost = sum(STAGE_COST[s] for s in stages_to_rerun)
-    initial_hold_cost = STAGE_COST[stage]
+    estimated_total_cost = sum(stage_hold(s) for s in stages_to_rerun)
+    initial_hold_cost = stage_hold(stage)
 
     user = (
         await session.execute(select(User).where(User.id == user_id).with_for_update())
@@ -347,7 +347,7 @@ async def request_partial_rerun(
         input_snapshot=input_snapshot,
         input_hash=key,
         idempotency_key=key,
-        cost=STAGE_COST[stage],
+        cost=stage_hold(stage),
     )
     session.add(task)
     await session.flush()

@@ -1,7 +1,39 @@
+from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from toontales_ai.domain.enums import Stage
+
+# ВАЖНО про смысл этого модуля: он не измеряет расход, а СЧИТАЕТ его по тарифам
+# ниже. Если провайдер поднимет цену, ни одна цифра здесь не изменится — расчёт
+# останется прежним, а реальные счета вырастут. Дрейф тарифов невидим изнутри
+# по построению; единственный источник правды — инвойсы провайдеров.
+# Отсюда три способа его поймать:
+#   1. TARIFF_CHECKED_AT + метрика возраста — напоминание сверить руками;
+#   2. счётчик клампа в pipeline_sync._settle — реальность вышла за верхнюю
+#      границу, значит тариф уже уехал;
+#   3. admin/provider-spend — расчётный расход по провайдерам, который сверяется
+#      с суммой в инвойсе.
+
+# Дата последней ручной сверки тарифа с прайс-листом провайдера. Обновлять
+# ВМЕСТЕ с цифрами: устаревшая дата поднимает toontales_tariff_age_days и алерт.
+TARIFF_CHECKED_AT: dict[str, date] = {
+    "anthropic": date(2026, 7, 21),
+    "runway": date(2026, 7, 23),
+    "elevenlabs": date(2026, 7, 21),
+    "sync": date(2026, 7, 21),
+}
+
+# Какой провайдер обслуживает стадию — для сверки расчёта с инвойсом.
+# composition считается на своих мощностях, внешнего счёта у неё нет.
+STAGE_PROVIDER: dict[Stage, str] = {
+    Stage.STORYBOARD: "anthropic",
+    Stage.IMAGE: "runway",
+    Stage.VIDEO: "runway",
+    Stage.AUDIO: "elevenlabs",
+    Stage.LIPSYNC: "sync",
+    Stage.COMPOSITION: "self",
+}
 
 # Все тарифы дрейфуют и требуют периодической ревизии.
 # Источник: Anthropic pricing, Claude Haiku 4.5; WebSearch, сверено 2026-07-21.

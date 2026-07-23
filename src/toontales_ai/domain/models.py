@@ -209,7 +209,12 @@ class Task(Base):
     celery_task_id: Mapped[str | None] = mapped_column(nullable=True)
     next_poll_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
+    # cost — холд (верхняя граница, блокируется до запуска), price — фактическое
+    # списание по real_cost_usd * наценка (orchestration/pricing.py). price=None,
+    # пока задача не завершилась; разница cost - price возвращается на баланс.
     cost: Mapped[int] = mapped_column(default=0)
+    price: Mapped[int | None] = mapped_column(nullable=True)
+    # Себестоимость. Только для админки и сверки наценки — клиенту не отдаётся.
     real_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     # Стабильный ключ логической операции: hash(run_id + stage + scene_id + input_version).
     # attempt в ключ не входит (review.md §1).

@@ -13,7 +13,7 @@ import { LoadingState } from '../components/LoadingState'
 import { PageHeader } from '../components/PageHeader'
 import { Pagination } from '../components/Pagination'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatCurrency, formatDate, runStatusLabels } from '../format'
+import { formatCurrency, formatDate, formatMarkup, formatSparks, runStatusLabels } from '../format'
 
 const LIMIT = 10
 
@@ -84,6 +84,8 @@ export function RunsPage(): JSX.Element {
                   <th className="px-5 py-3.5">Статус</th>
                   <th className="px-5 py-3.5">Пользователь</th>
                   <th className="px-5 py-3.5">Себестоимость</th>
+                  <th className="px-5 py-3.5">Списано</th>
+                  <th className="px-5 py-3.5">Наценка</th>
                   <th className="px-5 py-3.5">Триггер</th>
                   <th className="px-5 py-3.5">Создан</th>
                   <th className="px-5 py-3.5">Завершён</th>
@@ -103,6 +105,8 @@ export function RunsPage(): JSX.Element {
                     <td className="px-5 py-4"><StatusBadge status={run.status} /></td>
                     <td className="px-5 py-4 font-medium text-slate-900">{run.user_email}</td>
                     <td className="whitespace-nowrap px-5 py-4 font-mono font-semibold text-slate-800">{formatCurrency(run.real_cost_usd)}</td>
+                    <td className="whitespace-nowrap px-5 py-4 font-mono font-semibold text-slate-800">{formatSparks(run.charged_sparks)}</td>
+                    <td className="whitespace-nowrap px-5 py-4 font-mono font-semibold text-slate-800">{formatMarkup(run.actual_markup)}</td>
                     <td className="px-5 py-4 text-slate-600">{run.trigger}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-slate-600">{formatDate(run.created_at)}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-slate-600">{formatDate(run.finished_at)}</td>
