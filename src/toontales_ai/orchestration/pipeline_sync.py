@@ -392,14 +392,12 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
     if task.status not in (TaskStatus.WAITING_PROVIDER, TaskStatus.SUBMITTING):
         return
 
-    # Результат от ПРЕДЫДУЩЕЙ провайдерской попытки не должен применяться к новой:
-    # после переотправки provider_job_id уже другой. Ловит webhook/poll со старым
-    # job id, доставленный после ретрая. None у обоих — синхронный путь без job id.
-    if (
-        result.provider_job_id is not None
-        and task.provider_job_id is not None
-        and result.provider_job_id != task.provider_job_id
-    ):
+    # Результат от ПРЕДЫДУЩЕЙ провайдерской попытки не должен применяться к новой.
+    # Блокируем любой результат, несущий job id, который не совпадает с текущим —
+    # включая окно SUBMITTING, где текущий сброшен в None (tasks.py): старый
+    # терминальный колбэк (job-A) прилетает при task.provider_job_id=None и
+    # отвергается. Синхронный путь несёт result.provider_job_id=None и проходит.
+    if result.provider_job_id is not None and result.provider_job_id != task.provider_job_id:
         return
 
     # Стадия требует хотя бы одного валидного MediaAsset (storyboard — исключение,

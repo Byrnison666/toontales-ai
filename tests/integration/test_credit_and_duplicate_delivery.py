@@ -26,6 +26,7 @@ def _seed_run_with_pending_task(session, *, stage: Stage = Stage.IMAGE, cost: in
     # WAITING_PROVIDER, а не PENDING: complete_task в проде вызывается только
     # когда задача ждёт результат провайдера (см. гард по статусу в pipeline_sync).
     task = Task(run_id=run.id, stage=stage, provider="stub", status=TaskStatus.WAITING_PROVIDER,
+                provider_job_id="job-1",
                 input_hash=key, idempotency_key=key, cost=cost)
     session.add(task)
     session.commit()

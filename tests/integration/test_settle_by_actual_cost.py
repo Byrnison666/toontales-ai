@@ -26,6 +26,9 @@ def _seed_task(session, *, stage: Stage, balance: int = 100_000):
     hold = stage_hold(stage)
     key = task_idempotency_key(run_id=run.id, stage=stage, scene_id=None, input_version="v1")
     task = Task(run_id=run.id, stage=stage, provider="stub", status=TaskStatus.WAITING_PROVIDER,
+                # В проде задача в WAITING_PROVIDER всегда имеет job id, и результат
+                # приходит с ним же — complete_task сверяет их (job-гард).
+                provider_job_id="job-1",
                 input_hash=key, idempotency_key=key, cost=hold)
     session.add(task)
     # Холд уже списан с баланса на этапе _hold_and_enqueue — воспроизводим это,
@@ -140,3 +143,32 @@ def test_duplicate_completion_settles_only_once(db_session):
     assert len(_ledger(db_session, task.id, CreditTransactionType.RELEASE)) == 1
     assert user.credit_balance == balance_after_first
     assert user.credit_balance > balance_after_hold
+
+
+def test_stale_result_during_resubmit_window_is_ignored(db_session):
+    """P0: пока новая попытка в SUBMITTING (job id сброшен), терминальный колбэк
+    ПРЕДЫДУЩЕЙ попытки не должен применяться — иначе полный release + повторный
+    charge разведут баланс с ledger."""
+    from toontales_ai.domain.enums import TaskStatus
+
+    user, task = _seed_task(db_session, stage=Stage.VIDEO)
+    # Воспроизводим окно переотправки: задача снова в SUBMITTING, job прошлой
+    # попытки сброшен в None (как это делает process_task).
+    task.status = TaskStatus.SUBMITTING
+    task.provider_job_id = None
+    db_session.commit()
+
+    stale = ProviderJobResult(
+        provider_job_id="old-job-A",  # результат ПРОШЛОЙ попытки
+        status=ProviderJobStatus.SUCCEEDED,
+        artifacts=({"storage_key": "test/stale", "content_type": "image/png"},),
+        usage={"duration_seconds": 5},
+    )
+    complete_task(db_session, task_id=task.id, result=stale)
+
+    db_session.refresh(task)
+    # Задача осталась в SUBMITTING, ничего не списано и не возвращено.
+    assert task.status == TaskStatus.SUBMITTING
+    assert task.price is None
+    assert _ledger(db_session, task.id, CreditTransactionType.CHARGE) == []
+    assert _ledger(db_session, task.id, CreditTransactionType.RELEASE) == []

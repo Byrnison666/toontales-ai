@@ -333,6 +333,11 @@ def process_task(self: CeleryTask, task_id: str) -> None:
 
         task.status = TaskStatus.SUBMITTING
         task.attempt_no += 1
+        # Сбрасываем job id прошлой попытки: пока новая попытка в SUBMITTING,
+        # дубликат терминального результата прошлой (тот же старый job) не должен
+        # считаться своим. complete_task отвергает результат с job id, не равным
+        # текущему (None во время SUBMITTING) — см. job-гард там.
+        task.provider_job_id = None
         task.celery_task_id = self.request.id
         task_stage = task.stage  # для release после закрытия сессии (task станет detached)
         session.commit()
