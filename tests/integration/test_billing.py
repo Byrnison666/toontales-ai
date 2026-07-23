@@ -94,7 +94,12 @@ async def test_admin_topup_requires_correct_key(db_session, monkeypatch):
     monkeypatch.setenv("TOONTALES_ADMIN_API_KEY", "secret-admin-key")
     settings_module.get_settings.cache_clear()
 
-    # неверный ключ — 403
+    # отсутствие заголовка — 401 (нет учётки), а не 422 от валидации
+    with pytest.raises(HTTPException) as exc_info:
+        _require_admin(x_admin_key=None)
+    assert exc_info.value.status_code == 401
+
+    # неверный ключ — 403 (аутентификация не прошла)
     with pytest.raises(HTTPException) as exc_info:
         _require_admin(x_admin_key="wrong")
     assert exc_info.value.status_code == 403
