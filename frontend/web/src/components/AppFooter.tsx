@@ -12,25 +12,6 @@ export function AppFooter(): JSX.Element {
             </span>
             <span aria-hidden="true">✦</span>
           </div>
-          {/* Реквизиты самозанятого показываем только после запуска оплаты (см. legal.ts). */}
-          {paymentsLive && (
-            <>
-              <p className="text-sm leading-relaxed text-violet-300">
-                {requisites.taxStatus} · {requisites.fullName} · ИНН{' '}
-                <span className="font-semibold text-violet-100">{requisites.inn}</span>
-              </p>
-              <p className="text-sm text-violet-300">
-                {requisites.city} ·{' '}
-                <a href={`mailto:${requisites.email}`} className="transition-colors hover:text-amber-100">
-                  {requisites.email}
-                </a>{' '}
-                ·{' '}
-                <a href={`tel:${requisites.phoneHref}`} className="transition-colors hover:text-amber-100">
-                  {requisites.phone}
-                </a>
-              </p>
-            </>
-          )}
         </div>
 
         {paymentsLive && (
