@@ -501,3 +501,34 @@ async def health(session: AsyncSession = Depends(get_db_session)) -> AdminHealth
     tasks_by_status = {s.value: c for s, c in status_rows}
 
     return AdminHealthResponse(checks=checks, tasks_by_status=tasks_by_status)
+
+
+# ---------- остатки провайдеров ----------
+
+
+class ProviderBalanceItem(BaseModel):
+    provider: str
+    label: str
+    available: bool
+    balance: float | None
+    unit: str | None
+    balance_usd: str | None
+    note: str | None
+    reset_at: str | None
+    low: bool
+    error: str | None
+    console_url: str
+
+
+class ProviderBalancesResponse(BaseModel):
+    providers: list[ProviderBalanceItem]
+
+
+@router.get("/provider-balances", response_model=ProviderBalancesResponse)
+async def provider_balances(refresh: bool = False) -> ProviderBalancesResponse:
+    """Реальные остатки на счетах провайдеров (когда/какой пополнять). refresh=1
+    обходит кеш и дёргает API провайдеров напрямую."""
+    from toontales_ai.orchestration.provider_balances import get_provider_balances
+
+    items = await get_provider_balances(force_refresh=refresh)
+    return ProviderBalancesResponse(providers=[ProviderBalanceItem(**item) for item in items])

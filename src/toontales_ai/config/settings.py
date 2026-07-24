@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # искры не запустить (искры активного ролика "заняты" через _committed_active_price).
     max_active_runs_per_user: int = 1
 
+    # Остатки провайдеров в админке (provider_balances). Порог «мало» — когда
+    # подсветить, что пора пополнять. Кеш, чтобы не дёргать API на каждый заход.
+    runway_low_credits_threshold: int = 1000  # ~$10 (× $0.01/кредит)
+    elevenlabs_low_chars_threshold: int = 20_000  # ~22 мин озвучки
+    provider_balance_cache_seconds: int = 300
+
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = ""
     elevenlabs_model_id: str = "eleven_multilingual_v2"

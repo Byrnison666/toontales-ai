@@ -5,6 +5,7 @@ const navigation = [
   { to: '/', label: 'Дашборд', end: true },
   { to: '/users', label: 'Пользователи', end: false },
   { to: '/runs', label: 'Генерации', end: false },
+  { to: '/providers', label: 'Остатки', end: false },
   { to: '/health', label: 'Здоровье', end: false },
 ] as const
 

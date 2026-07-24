@@ -118,6 +118,24 @@ export interface BalanceEditResponse {
   credit_balance: number
 }
 
+export interface ProviderBalance {
+  provider: string
+  label: string
+  available: boolean
+  balance: number | null
+  unit: string | null
+  balance_usd: string | null
+  note: string | null
+  reset_at: string | null
+  low: boolean
+  error: string | null
+  console_url: string
+}
+
+export interface ProviderBalancesResponse {
+  providers: ProviderBalance[]
+}
+
 interface ErrorBody {
   detail?: unknown
 }
@@ -222,6 +240,11 @@ export const adminApi = {
     apiRequest<RunDetails>(`/api/v1/admin/runs/${encodeURIComponent(runId)}`, { signal }),
   getHealth: (signal?: AbortSignal) =>
     apiRequest<HealthResponse>('/api/v1/admin/health', { signal }),
+  getProviderBalances: (refresh = false, signal?: AbortSignal) =>
+    apiRequest<ProviderBalancesResponse>(
+      `/api/v1/admin/provider-balances${refresh ? '?refresh=1' : ''}`,
+      { signal },
+    ),
   editBalance: (userId: string, payload: BalanceEditRequest, signal?: AbortSignal) =>
     apiRequest<BalanceEditResponse>(`/api/v1/admin/users/${encodeURIComponent(userId)}/balance`, {
       method: 'POST',

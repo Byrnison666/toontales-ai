@@ -10,6 +10,7 @@ const UsersPage = lazy(() => import('./pages/UsersPage').then((module) => ({ def
 const RunsPage = lazy(() => import('./pages/RunsPage').then((module) => ({ default: module.RunsPage })))
 const RunDetailsPage = lazy(() => import('./pages/RunDetailsPage').then((module) => ({ default: module.RunDetailsPage })))
 const HealthPage = lazy(() => import('./pages/HealthPage').then((module) => ({ default: module.HealthPage })))
+const ProvidersPage = lazy(() => import('./pages/ProvidersPage').then((module) => ({ default: module.ProvidersPage })))
 
 export function App(): JSX.Element {
   const { isAuthenticated } = useAuth()
@@ -26,6 +27,7 @@ export function App(): JSX.Element {
           <Route path="users" element={<UsersPage />} />
           <Route path="runs" element={<RunsPage />} />
           <Route path="runs/:id" element={<RunDetailsPage />} />
+          <Route path="providers" element={<ProvidersPage />} />
           <Route path="health" element={<HealthPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
