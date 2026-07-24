@@ -63,6 +63,7 @@ def _storyboard_schema(scene_count: int) -> dict:
 
 
 def _system_prompt(scene_count: int, clip_seconds: int) -> str:
+    style = get_settings().image_style_prompt.strip()
     return (
         f"Ты сценарист коротких анимированных роликов. По сюжету пользователя составь "
         f"раскадровку ровно из {scene_count} сцен для вертикального (9:16) ролика. "
@@ -73,7 +74,10 @@ def _system_prompt(scene_count: int, clip_seconds: int) -> str:
         f"закадровый текст на том же языке, что и исходный сюжет), image_prompt "
         f"(детальное описание кадра на английском для text-to-image модели), "
         f"camera_movement (короткое описание движения камеры на английском) и "
-        f"mood_notes (тон/настроение сцены на английском)."
+        f"mood_notes (тон/настроение сцены на английском). "
+        f"ВАЖНО про стиль: все кадры — в едином мультяшном/диснеевском стиле, БЕЗ "
+        f"фотореализма. Каждый image_prompt описывай именно как рисованную "
+        f"мультипликацию в этом стиле: {style}"
     )
 
 

@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     # запрещён на уровне настроек, а не оставлен на дисциплину.
     runway_video_model: str = "gen4_turbo"
 
+    # Единый визуальный стиль ВСЕХ кадров: мультяшный/диснеевский, без фотореализма.
+    # Добавляется к каждому image-промпту детерминированно (gen4_image, adapters/
+    # image/runway.py) и дублируется инструкцией в промпте раскадровки, чтобы даже
+    # исходный image_prompt писался в этом стиле. Видео (image-to-video) наследует
+    # стиль от картинки. Меняется через env без правки кода.
+    image_style_prompt: str = (
+        "Classic Disney-style 2D cartoon animation, hand-drawn look, bright saturated "
+        "colors, soft cel shading, clean bold outlines, expressive cartoon characters, "
+        "whimsical playful storybook illustration. Strictly NOT photorealistic: no realism, "
+        "no photography, no live-action, no 3D render."
+    )
+
     # Lipsync-стадия (Sync.so). True (default) — говорящие губы, видео фикс-длины,
     # звук вжигается в клип. False — voiceover-режим: озвучка кладётся поверх немого
     # видео на этапе composition, длина видео подгоняется под озвучку (Runway

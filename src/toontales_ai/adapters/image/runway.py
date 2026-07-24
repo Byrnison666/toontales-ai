@@ -58,7 +58,12 @@ def _raise_for_status(response: httpx.Response, *, context: str) -> None:
 
 
 def _build_prompt_text(payload: dict) -> str:
+    # Стилевая директива идёт ПЕРВОЙ: гарантирует мультяшный/диснеевский стиль на
+    # каждом кадре и не срезается при обрезке по лимиту (обрезается хвост —
+    # сценоспецифичное описание, а не стиль).
+    style = get_settings().image_style_prompt.strip()
     parts = [
+        style,
         str(payload.get("image_prompt") or "").strip(),
         f"Mood: {payload['mood_notes']}." if payload.get("mood_notes") else "",
     ]

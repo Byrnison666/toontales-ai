@@ -114,6 +114,29 @@ async def test_submit_sends_expected_body_and_returns_queued(monkeypatch):
     assert "a fox in a forest" in body["promptText"]
     assert "mysterious" in body["promptText"]
     assert _FakeAsyncClient.last_post_call["headers"]["Authorization"] == "Bearer key-1"
+    # Стилевая директива добавляется ПЕРВОЙ к каждому кадру (мультяшный/диснеевский,
+    # без фотореализма) — иначе Runway тяготеет к реализму.
+    from toontales_ai.config.settings import get_settings
+
+    assert body["promptText"].startswith(get_settings().image_style_prompt.strip())
+    assert "NOT photorealistic" in body["promptText"]
+
+
+async def test_style_directive_survives_prompt_truncation(monkeypatch):
+    """Стиль обязан пережить обрезку по лимиту: очень длинный image_prompt не должен
+    вытеснить стилевую директиву (она идёт первой, обрезается хвост)."""
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.post_response = _FakeResponse(200, json_data={"id": "t", "status": "PENDING"})
+
+    from toontales_ai.config.settings import get_settings
+
+    adapter = RunwayImageAdapter()
+    await adapter.submit(
+        StageInput(task_id="t1", scene_id="s1", payload={"image_prompt": "x" * 5000}),
+        idempotency_key="run1:image_generation:s1:v1",
+    )
+    prompt = _FakeAsyncClient.last_post_call["json"]["promptText"]
+    assert prompt.startswith(get_settings().image_style_prompt.strip())
 
 
 async def test_submit_rejects_empty_prompt(monkeypatch):
