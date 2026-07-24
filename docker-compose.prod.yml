@@ -113,7 +113,28 @@ services:
       - api
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    # UI/API только на localhost сервера (доступ через SSH-туннель), не наружу —
+    # метрики бизнеса не должны быть публично доступны (152-ФЗ / security).
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    depends_on:
+      - api
+      - worker
+      - beat
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  prometheus_data:

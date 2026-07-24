@@ -194,37 +194,44 @@ multiprocess-обвязки, которую потребовал бы prefork.
 ## 3. Мониторинг и алерты
 
 Сервисы отдают метрики Prometheus: API — на `/metrics` основного порта,
-worker и beat — на `metrics_port` (9100 внутри контейнера). **Сам Prometheus в
-прод-стек пока не входит**, поэтому правила из `deploy/monitoring/alerts.yml`
-никем не читаются, пока его не поднимут.
+worker и beat — на `metrics_port` (9100 внутри контейнера). **Prometheus входит
+в прод-стек** (сервис `prometheus`, конфиг `deploy/monitoring/prometheus.yml`,
+правила `deploy/monitoring/alerts.yml`) — поднимается вместе с остальными через
+`up -d`. Скрейпит api/worker/beat внутри compose-сети.
 
-Подключение:
+UI/API Prometheus **не публикуется наружу** — порт на `127.0.0.1:9090`. Доступ с
+рабочей машины через SSH-туннель:
 
-```yaml
-# prometheus.yml
-rule_files:
-  - /etc/prometheus/alerts.yml
-scrape_configs:
-  - job_name: toontales-api
-    static_configs: [{ targets: ["api:8000"] }]
-  - job_name: toontales-worker
-    static_configs: [{ targets: ["worker:9100", "beat:9100"] }]
+```bash
+ssh -L 9090:127.0.0.1:9090 toontales
+# затем открыть http://localhost:9090 (вкладка Alerts — состояние правил)
 ```
 
-Смонтировать `deploy/monitoring/alerts.yml` в `/etc/prometheus/alerts.yml` и
-проверить перед выкаткой: `promtool check rules deploy/monitoring/alerts.yml`.
+Проверка правил перед выкаткой:
+
+```bash
+docker compose -f docker-compose.prod.yml exec prometheus \
+  promtool check rules /etc/prometheus/alerts.yml
+```
+
+> Prometheus только вычисляет и показывает алерты в своём UI. Маршрутизация
+> уведомлений (email/telegram) — отдельный компонент **Alertmanager**, в стек
+> пока не входит. Firing-алерты видны на вкладке Alerts, но никуда не шлются.
 
 ### Зачем именно эти правила
 
 Тарифы провайдеров захардкожены в `orchestration/real_cost.py`: себестоимость
 не измеряется, а **считается**. Если Runway поднимет цену, наш расчёт не
-изменится ни на цент — маржа просядет молча. Отсюда три независимых сигнала:
+изменится ни на цент — маржа просядет молча. Плюс прайсинг v3 не списывает на
+старте, поэтому важны исходы роликов. Сигналы:
 
 | Сигнал | Что означает |
 |---|---|
-| `ProviderPriceDriftDetected` | себестоимость вышла за верхнюю границу холда — тариф уже уехал |
+| `RunChargeCappedByBalance` | списание за успешный ролик зажато балансом — недоплата (баланс просел мимо старт-проверки) |
+| `RunFailureRateHigh` | много проваленных роликов — провайдерские расходы без выручки (сбой или абуз) |
 | `TariffReviewOverdue` | тариф давно не сверяли руками с прайс-листом |
+| `ProviderErrorRateHigh` | всплеск ошибок провайдера на стадии |
 | `GET /api/v1/admin/provider-spend` | расчётный расход по провайдерам — сверять с инвойсом |
 
-Первые два автоматические, третий требует человека: только инвойс показывает
-реальные деньги.
+Автоматические — первые четыре, последний требует человека: только инвойс
+показывает реальные деньги.
