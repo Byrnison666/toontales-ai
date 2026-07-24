@@ -62,6 +62,9 @@ def _build_stage_graph(*, lipsync_enabled: bool):
             Stage.COMPOSITION: (Stage.LIPSYNC,),
         }
         scene_scoped = frozenset({Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC})
+        # Линейный (топологический) порядок реально выполняемых этапов — для
+        # отображения прогресса пользователю и расчёта процента по всему ролику.
+        active = (Stage.STORYBOARD, Stage.IMAGE, Stage.VIDEO, Stage.AUDIO, Stage.LIPSYNC, Stage.COMPOSITION)
     else:
         # Voiceover: LIPSYNC исключён, VIDEO — join на (IMAGE, AUDIO) (нужна длина
         # озвучки для duration видео), COMPOSITION зависит от VIDEO.
@@ -86,7 +89,10 @@ def _build_stage_graph(*, lipsync_enabled: bool):
             Stage.COMPOSITION: (Stage.VIDEO,),
         }
         scene_scoped = frozenset({Stage.IMAGE, Stage.VIDEO, Stage.AUDIO})
-    return downstream, immediate_next, predecessors, scene_scoped
+        # Voiceover: LIPSYNC нет; озвучка (AUDIO) идёт до VIDEO, т.к. VIDEO join'ит
+        # (IMAGE, AUDIO) — длина видео берётся из длины озвучки. Порядок «по факту».
+        active = (Stage.STORYBOARD, Stage.IMAGE, Stage.AUDIO, Stage.VIDEO, Stage.COMPOSITION)
+    return downstream, immediate_next, predecessors, scene_scoped, active
 
 
 from toontales_ai.config.settings import get_settings  # noqa: E402  (после Stage для _build_stage_graph)
@@ -96,6 +102,7 @@ from toontales_ai.config.settings import get_settings  # noqa: E402  (после
     STAGE_IMMEDIATE_NEXT,
     STAGE_PREDECESSORS,
     SCENE_SCOPED_STAGES,
+    ACTIVE_STAGES,
 ) = _build_stage_graph(lipsync_enabled=get_settings().lipsync_enabled)
 
 

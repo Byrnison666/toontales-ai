@@ -1,11 +1,15 @@
 import type { ProgressEvent, RunSnapshot, Stage } from '../api'
 
+// Реально выполняемые этапы в порядке пайплайна (voiceover-режим, lipsync выключен
+// в проде). Должен совпадать с backend ACTIVE_STAGES (domain/enums.py): озвучка
+// (audio) идёт до video, т.к. video берёт длину из озвучки. LIPSYNC не показываем —
+// синхронизации губ сейчас нет. Индексы этапов должны сходиться с backend
+// stage_index/total_stages, иначе процент и отметки «готово» разъедутся.
 export const STAGES: readonly Stage[] = [
   'storyboard_generation',
   'image_generation',
-  'video_generation',
   'audio_generation',
-  'lipsync',
+  'video_generation',
   'composition',
 ] as const
 

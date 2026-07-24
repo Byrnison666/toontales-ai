@@ -453,23 +453,30 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
 
 
 def _publish_task_event(*, run_id, project_id, task_id, stage: Stage, status: TaskStatus, error_payload: dict | None) -> None:
-    from toontales_ai.domain.enums import Stage as _Stage
+    from toontales_ai.domain.enums import ACTIVE_STAGES
     from toontales_ai.ws.events import publish_event
 
-    stage_order = list(_Stage)
-    stage_index = stage_order.index(stage)
-    progress = int(round((stage_index + 1) / len(stage_order) * 100)) if status == TaskStatus.COMPLETED else int(
-        round(stage_index / len(stage_order) * 100)
+    # Считаем прогресс по РЕАЛЬНО выполняемым этапам (ACTIVE_STAGES зависит от флага
+    # lipsync), а не по всем значениям enum — иначе процент делился бы на фантомный
+    # LIPSYNC, который в voiceover-режиме не выполняется, и не отражал бы весь ролик.
+    stage_order = list(ACTIVE_STAGES)
+    stage_index = stage_order.index(stage) if stage in stage_order else 0
+    total = len(stage_order)
+    progress = int(round((stage_index + 1) / total * 100)) if status == TaskStatus.COMPLETED else int(
+        round(stage_index / total * 100)
     )
+    # message оставляем пустым: всю пользовательскую подпись формирует фронтенд на
+    # русском по stage/status (STAGE_LABELS). Раньше сюда шла сырая техническая
+    # строка вида "image_generation: completed" — её пользователю видеть не нужно.
     publish_event(
         run_id=run_id,
         project_id=project_id,
         task_id=task_id,
         stage=stage.value,
         stage_index=stage_index,
-        total_stages=len(stage_order),
+        total_stages=total,
         status=status.value,
         progress=progress,
-        message=f"{stage.value}: {status.value}",
+        message="",
         error={"code": error_payload.get("code"), "detail": error_payload.get("detail")} if error_payload else None,
     )
