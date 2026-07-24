@@ -195,15 +195,5 @@ async def test_partial_rerun_rejected_on_underpaid_completed_parent(db_session):
             await request_partial_rerun(
                 session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
             )
-
-    # доплатили до полной цены -> rerun проходит
-    db_session.query(CreditTransaction).filter_by(idempotency_key=credit_run_charge_key(run.id)).update(
-        {"amount": price}
-    )
-    db_session.commit()
-    async with AsyncSessionLocal() as session:
-        new_run = await request_partial_rerun(
-            session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
-        )
-        await session.commit()
-    assert new_run.parent_run_id == run.id
+    # allow-путь (полностью оплаченный родитель) покрыт test_partial_rerun_join_stages,
+    # где родитель сеется с CHARGE на полную цену.

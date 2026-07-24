@@ -334,6 +334,10 @@ def process_task(self: CeleryTask, task_id: str) -> None:
             task.status = TaskStatus.CANCELED
             task.error_payload = {"code": "RUN_TERMINAL", "detail": f"run already {run.status.value}"}
             session.commit()
+            # Если задача держала provider-слот с прошлой попытки (RETRY_SCHEDULED
+            # редоставка) — вернуть его сразу, не ждать TTL. release идемпотентен,
+            # поэтому безопасен и когда слота нет.
+            _release_semaphore_if_held(task.stage, str(task.id))
             return
 
         # Admission control ДО перевода в SUBMITTING (иначе занятый слот жёг бы

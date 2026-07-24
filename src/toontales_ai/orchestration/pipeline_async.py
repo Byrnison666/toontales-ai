@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import (
+    CreditTransactionType,
     RetentionClass,
     RunStatus,
     RunTrigger,
@@ -310,10 +311,14 @@ async def request_partial_rerun(
     # для платного initial-рана сумма CHARGE должна покрывать price. rerun-раны
     # имеют price=0 (их корень — уже проверенный оплаченный ролик), их пропускаем.
     if parent_run.price > 0:
+        # Фильтр по type=CHARGE (не только по ключу): ключ run_charge:<id> уникален
+        # и генерится лишь _charge_run, но проверка «оплачено» обязана считать именно
+        # списание, а не любую проводку с этим ключом.
         charge = (
             await session.execute(
                 select(CreditTransaction.amount).where(
-                    CreditTransaction.idempotency_key == credit_run_charge_key(parent_run.id)
+                    CreditTransaction.idempotency_key == credit_run_charge_key(parent_run.id),
+                    CreditTransaction.type == CreditTransactionType.CHARGE,
                 )
             )
         ).scalar_one_or_none()
