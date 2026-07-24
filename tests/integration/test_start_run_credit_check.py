@@ -58,10 +58,13 @@ async def test_start_run_does_not_touch_balance(db_session):
     assert user.credit_balance == price  # баланс не тронут
 
 
-async def test_start_run_rejects_when_active_runs_would_oversubscribe(db_session):
+async def test_start_run_rejects_when_active_runs_would_oversubscribe(db_session, monkeypatch):
     """Резерва нет, поэтому оверсабскрипшн параллельными роликами ловится проверкой:
     баланс должен покрыть этот ролик + уже активные. Второй старт при балансе ровно
-    на один ролик должен отказать."""
+    на один ролик должен отказать по балансу. Лимит активных ранов временно поднят,
+    чтобы изолировать балансовую проверку (при дефолтном лимите=1 второй старт упёрся
+    бы в лимит раньше баланса — это отдельный тест)."""
+    monkeypatch.setattr(get_settings(), "max_active_runs_per_user", 10)
     price = price_from_duration(30)
     user, project = _seed_user_and_project(db_session, credit_balance=price)
 
