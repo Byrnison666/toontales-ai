@@ -48,9 +48,10 @@ function ProviderCard({
   const dot = isError ? 'bg-amber-500 ring-amber-100' : isLow ? 'bg-red-500 ring-red-100' : 'bg-emerald-500 ring-emerald-100'
 
   const save = () => {
-    const value = Number(amount)
+    // Принимаем и запятую (ру-локаль), и точку — любую неотрицательную сумму.
+    const value = Number(amount.replace(',', '.').trim())
     if (!Number.isFinite(value) || value < 0) {
-      setSaveError('Введите сумму в долларах (например 20)')
+      setSaveError('Введите сумму в долларах (например 3,50)')
       return
     }
     setSaving(true)
@@ -104,12 +105,11 @@ function ProviderCard({
         <div className="mt-4 space-y-2">
           <label className="block text-xs font-medium text-slate-500">Остаток на счёте, $</label>
           <input
-            type="number"
-            min={0}
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            placeholder="например 20"
+            placeholder="например 3,50"
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
           />
           <input
