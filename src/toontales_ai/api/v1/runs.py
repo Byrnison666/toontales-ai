@@ -27,6 +27,7 @@ from toontales_ai.domain.models import GenerationRun, MediaAsset, Project, Scene
 from toontales_ai.orchestration.pipeline_async import (
     InsufficientCreditsError,
     InvalidPartialRerunError,
+    TooManyActiveRunsError,
     request_partial_rerun,
     start_run,
 )
@@ -82,6 +83,8 @@ async def generate_project(
         )
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc))
+    except TooManyActiveRunsError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
     except ModerationRejectedError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -190,6 +193,8 @@ async def partial_rerun(
         )
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc))
+    except TooManyActiveRunsError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
     except InvalidPartialRerunError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 

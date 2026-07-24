@@ -52,6 +52,12 @@ class Settings(BaseSettings):
 
     rate_limit_generate_per_minute: int = 5
 
+    # Прайсинг v3 не списывает баланс на старте, поэтому один баланс переиспользуется
+    # на последовательные попытки, а каждый активный ролик жжёт деньги провайдеров до
+    # точки списания (успех COMPOSITION). Лимит числа одновременно незавершённых
+    # роликов на юзера ограничивает, сколько ресурсов можно жечь параллельно.
+    max_active_runs_per_user: int = 3
+
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = ""
     elevenlabs_model_id: str = "eleven_multilingual_v2"

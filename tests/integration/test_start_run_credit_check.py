@@ -6,9 +6,14 @@ import uuid
 
 import pytest
 
+from toontales_ai.config.settings import get_settings
 from toontales_ai.domain.enums import RunStatus
 from toontales_ai.domain.models import GenerationRun, Project, User
-from toontales_ai.orchestration.pipeline_async import InsufficientCreditsError, start_run
+from toontales_ai.orchestration.pipeline_async import (
+    InsufficientCreditsError,
+    TooManyActiveRunsError,
+    start_run,
+)
 from toontales_ai.orchestration.pricing import price_from_duration
 from toontales_ai.storage.db import AsyncSessionLocal
 
@@ -83,6 +88,42 @@ async def test_start_run_rejects_when_active_runs_would_oversubscribe(db_session
         )
         await session.commit()
     assert second.status == RunStatus.RUNNING
+
+
+async def test_start_run_rejects_when_active_run_limit_reached(db_session):
+    """Anti-abuse: баланс на старте не трогается, поэтому число одновременно
+    незавершённых роликов лимитируется явно. При достаточном балансе (чтобы не
+    поймать InsufficientCreditsError раньше) старт сверх лимита -> отказ."""
+    max_active = get_settings().max_active_runs_per_user
+    price = price_from_duration(30)
+    # баланса с запасом на все ролики + ещё один — чтобы упереться именно в лимит
+    # активных, а не в баланс
+    user, project = _seed_user_and_project(db_session, credit_balance=price * (max_active + 2))
+
+    for _ in range(max_active):
+        async with AsyncSessionLocal() as session:
+            await start_run(
+                session, project_id=project.id, user_id=user.id, script_text="s", duration_seconds=30
+            )
+            await session.commit()
+
+    # (max_active + 1)-й старт при живых предыдущих -> лимит
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(TooManyActiveRunsError):
+            await start_run(
+                session, project_id=project.id, user_id=user.id, script_text="s", duration_seconds=30
+            )
+
+    # завершим один -> снова можно
+    one = db_session.query(GenerationRun).filter_by(status=RunStatus.RUNNING).first()
+    db_session.query(GenerationRun).filter_by(id=one.id).update({"status": RunStatus.COMPLETED})
+    db_session.commit()
+    async with AsyncSessionLocal() as session:
+        run = await start_run(
+            session, project_id=project.id, user_id=user.id, script_text="s", duration_seconds=30
+        )
+        await session.commit()
+    assert run.status == RunStatus.RUNNING
 
 
 async def test_partial_rerun_rejected_on_unpaid_parent(db_session):

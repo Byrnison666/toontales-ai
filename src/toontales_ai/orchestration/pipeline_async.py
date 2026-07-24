@@ -6,7 +6,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from toontales_ai.config.settings import get_settings
@@ -24,6 +24,15 @@ from toontales_ai.orchestration.pricing import price_from_duration
 
 
 class InsufficientCreditsError(Exception):
+    pass
+
+
+class TooManyActiveRunsError(Exception):
+    """У пользователя слишком много одновременно незавершённых роликов. Прайсинг v3
+    не списывает баланс на старте, поэтому один баланс переиспользуется на
+    последовательные попытки, а каждый активный ролик жжёт деньги провайдеров до
+    точки списания. Лимит числа активных ранов не даёт заабузить это параллельно."""
+
     pass
 
 
@@ -54,6 +63,22 @@ async def _committed_active_price(session: AsyncSession, user_id: uuid.UUID, exc
     return sum(prices)
 
 
+async def _active_run_count(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """Число незавершённых (RUNNING/PENDING) роликов пользователя. Вызывать под
+    FOR UPDATE на user (см. start_run) — иначе два параллельных старта проскочат
+    лимит: оба прочитают старое значение до вставки друг друга."""
+    stmt = (
+        select(func.count())
+        .select_from(GenerationRun)
+        .join(Project, Project.id == GenerationRun.project_id)
+        .where(
+            Project.user_id == user_id,
+            GenerationRun.status.in_((RunStatus.RUNNING, RunStatus.PENDING)),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def start_run(
     session: AsyncSession,
     *,
@@ -72,6 +97,19 @@ async def start_run(
     user = (
         await session.execute(select(User).where(User.id == user_id).with_for_update())
     ).scalar_one()
+
+    # Anti-abuse: баланс на старте не трогается, поэтому один баланс можно гонять на
+    # последовательные попытки, а каждый активный ролик жжёт деньги провайдеров до
+    # точки списания. Лимитируем число одновременно незавершённых роликов. Проверка
+    # под FOR UPDATE на user — параллельные старты сериализованы, гонки нет.
+    max_active = get_settings().max_active_runs_per_user
+    active_count = await _active_run_count(session, user_id)
+    if active_count >= max_active:
+        raise TooManyActiveRunsError(
+            f"user has {active_count} active runs (limit {max_active}); "
+            "wait for one to finish before starting another"
+        )
+
     # Прайсинг v3: баланс НЕ трогаем на старте (ни резерва, ни списания). Но раз
     # резерва нет, оверсабскрипшн параллельными роликами ловим здесь: баланс должен
     # покрыть цену этого + сумму цен уже активных запусков. Списание — по успеху
@@ -254,6 +292,18 @@ async def request_partial_rerun(
         raise InvalidPartialRerunError(
             f"parent run must be COMPLETED to rerun (got {parent_run.status.value}): "
             "rerun is free and only regenerates an already-paid video"
+        )
+
+    # Anti-abuse: rerun бесплатен, но создаёт активный run, который тоже жжёт деньги
+    # провайдеров. Тот же лимит активных ранов, что и в start_run — иначе его можно
+    # обойти через rerun. FOR UPDATE на user сериализует параллельные старты/rerun'ы.
+    await session.execute(select(User).where(User.id == user_id).with_for_update())
+    max_active = get_settings().max_active_runs_per_user
+    active_count = await _active_run_count(session, user_id)
+    if active_count >= max_active:
+        raise TooManyActiveRunsError(
+            f"user has {active_count} active runs (limit {max_active}); "
+            "wait for one to finish before starting another"
         )
 
     # IDOR-проверка (review.md §6): scene_id обязателен для scene-scoped стадий и должен
