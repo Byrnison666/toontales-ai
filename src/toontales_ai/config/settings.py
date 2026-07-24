@@ -82,11 +82,14 @@ class Settings(BaseSettings):
     # image/runway.py) и дублируется инструкцией в промпте раскадровки, чтобы даже
     # исходный image_prompt писался в этом стиле. Видео (image-to-video) наследует
     # стиль от картинки. Меняется через env без правки кода.
+    # ВАЖНО: без названий студий/брендов (Disney, Pixar и т.п.) — Runway-модерация
+    # режет торговые марки (INPUT_PREPROCESSING.SAFETY.TEXT), проверено живым тестом.
+    # Стиль задаётся описанием, а не брендом — вид тот же (классическая 2D-рисовка).
     image_style_prompt: str = (
-        "Classic Disney-style 2D cartoon animation, hand-drawn look, bright saturated "
-        "colors, soft cel shading, clean bold outlines, expressive cartoon characters, "
-        "whimsical playful storybook illustration. Strictly NOT photorealistic: no realism, "
-        "no photography, no live-action, no 3D render."
+        "Classic 2D hand-drawn cartoon animation style, bright saturated colors, soft cel "
+        "shading, clean bold outlines, expressive cartoon characters, whimsical playful "
+        "storybook illustration. Strictly NOT photorealistic: no realism, no photography, "
+        "no live-action, no 3D render."
     )
 
     # Lipsync-стадия (Sync.so). True (default) — говорящие губы, видео фикс-длины,
