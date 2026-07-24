@@ -111,7 +111,7 @@ async def test_submit_sends_expected_body_and_returns_scenes(monkeypatch):
     assert submission.result.usage == {"input_tokens": 120, "output_tokens": 340}
 
     body = _FakeAsyncClient.last_post_call["json"]
-    assert body["model"] == "claude-haiku-4-5-20251001"
+    assert body["model"] == "claude-sonnet-5"
     assert body["messages"] == [{"role": "user", "content": "A fox explores a magical forest."}]
     assert body["output_config"]["format"]["type"] == "json_schema"
     # Прайсинг v3: число сцен фиксировано длительностью — ровно N ключей, ВСЕ required

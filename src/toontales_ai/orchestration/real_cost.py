@@ -18,7 +18,7 @@ from toontales_ai.domain.enums import Stage
 # Дата последней ручной сверки тарифа с прайс-листом провайдера. Обновлять
 # ВМЕСТЕ с цифрами: устаревшая дата поднимает toontales_tariff_age_days и алерт.
 TARIFF_CHECKED_AT: dict[str, date] = {
-    "anthropic": date(2026, 7, 21),
+    "anthropic": date(2026, 7, 24),
     "runway": date(2026, 7, 23),
     "elevenlabs": date(2026, 7, 21),
     "sync": date(2026, 7, 21),
@@ -36,9 +36,11 @@ STAGE_PROVIDER: dict[Stage, str] = {
 }
 
 # Все тарифы дрейфуют и требуют периодической ревизии.
-# Источник: Anthropic pricing, Claude Haiku 4.5; WebSearch, сверено 2026-07-21.
-ANTHROPIC_INPUT_USD_PER_TOKEN = Decimal("1.00") / Decimal("1000000")
-ANTHROPIC_OUTPUT_USD_PER_TOKEN = Decimal("5.00") / Decimal("1000000")
+# Источник: Anthropic pricing, Claude Sonnet 5 (стандартный тариф, НЕ intro —
+# intro $2/$10 до 2026-08-31, но берём полный для запаса маржи); сверено 2026-07-24.
+# Держать синхронно с settings.anthropic_model.
+ANTHROPIC_INPUT_USD_PER_TOKEN = Decimal("3.00") / Decimal("1000000")
+ANTHROPIC_OUTPUT_USD_PER_TOKEN = Decimal("15.00") / Decimal("1000000")
 
 # Источник: Runway API pricing, gen4_image и gen4_turbo; docs.dev.runwayml.com,
 # сверено 2026-07-23. Video-тариф модельно-зависимый: gen4_turbo = 5 кред/с,

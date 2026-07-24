@@ -10,9 +10,10 @@ from toontales_ai.orchestration.real_cost import compute_real_cost_usd
     ("stage", "usage", "expected"),
     [
         (
+            # Sonnet 5: 1250×$3/1M + 320×$15/1M = 0.00375 + 0.0048 = 0.00855
             Stage.STORYBOARD,
             {"input_tokens": 1250, "output_tokens": 320},
-            Decimal("0.002850"),
+            Decimal("0.008550"),
         ),
         (Stage.IMAGE, {"images": 3}, Decimal("0.150000")),
         (Stage.VIDEO, {"duration_seconds": 5}, Decimal("0.250000")),  # gen4_turbo 5 кред/с

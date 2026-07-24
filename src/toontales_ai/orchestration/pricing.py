@@ -40,9 +40,10 @@ _CLIP_MAX = 10
 # видео), поэтому точность второстепенна.
 AUDIO_CHARS_PER_SECOND = Decimal("15")
 
-# Фиксированная себестоимость раскадровки на ролик (Anthropic Haiku, верхняя
-# граница: max_tokens=4096 выхода + ~4000 входа). Амортизируется на всю длину.
-STORYBOARD_USD = Decimal("0.025")
+# Фиксированная себестоимость раскадровки на ролик (Anthropic Sonnet 5, верхняя
+# граница: max_tokens=4096 выхода × $15/1M + ~2000 входа × $3/1M ≈ $0.067).
+# Держать синхронно с settings.anthropic_model и тарифами в real_cost.py.
+STORYBOARD_USD = Decimal("0.07")
 
 
 def scene_count_for_duration(seconds: int) -> int:
