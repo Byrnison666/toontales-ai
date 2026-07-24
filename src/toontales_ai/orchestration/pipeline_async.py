@@ -18,8 +18,17 @@ from toontales_ai.domain.enums import (
     TaskStatus,
 )
 from toontales_ai.adapters.moderation import get_moderation_adapter, moderate_text_or_raise
-from toontales_ai.domain.models import GenerationRun, MediaAsset, PipelineOutbox, Project, Scene, Task, User
-from toontales_ai.orchestration.idempotency import task_idempotency_key
+from toontales_ai.domain.models import (
+    CreditTransaction,
+    GenerationRun,
+    MediaAsset,
+    PipelineOutbox,
+    Project,
+    Scene,
+    Task,
+    User,
+)
+from toontales_ai.orchestration.idempotency import credit_run_charge_key, task_idempotency_key
 from toontales_ai.orchestration.pricing import price_from_duration
 
 
@@ -293,6 +302,26 @@ async def request_partial_rerun(
             f"parent run must be COMPLETED to rerun (got {parent_run.status.value}): "
             "rerun is free and only regenerates an already-paid video"
         )
+
+    # COMPLETED сам по себе не гарантирует ПОЛНУЮ оплату: _charge_run списывает
+    # min(price, balance) и всё равно завершает ролик, если баланс просел мимо
+    # старт-проверки (ручная правка админом вниз). Тогда бесплатный rerun выдал бы
+    # доработку недооплаченного ролика. Проверяем факт полной оплаты по ledger:
+    # для платного initial-рана сумма CHARGE должна покрывать price. rerun-раны
+    # имеют price=0 (их корень — уже проверенный оплаченный ролик), их пропускаем.
+    if parent_run.price > 0:
+        charge = (
+            await session.execute(
+                select(CreditTransaction.amount).where(
+                    CreditTransaction.idempotency_key == credit_run_charge_key(parent_run.id)
+                )
+            )
+        ).scalar_one_or_none()
+        if charge is None or charge < parent_run.price:
+            raise InvalidPartialRerunError(
+                f"parent run is underpaid (charged {charge or 0} of {parent_run.price}): "
+                "top up balance and re-run the video normally instead of a free rerun"
+            )
 
     # Anti-abuse: rerun бесплатен, но создаёт активный run, который тоже жжёт деньги
     # провайдеров. Тот же лимит активных ранов, что и в start_run — иначе его можно

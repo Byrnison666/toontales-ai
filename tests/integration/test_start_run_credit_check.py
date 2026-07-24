@@ -161,3 +161,49 @@ async def test_partial_rerun_rejected_on_unpaid_parent(db_session):
             await request_partial_rerun(
                 session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
             )
+
+
+async def test_partial_rerun_rejected_on_underpaid_completed_parent(db_session):
+    """Ревью денежных путей: COMPLETED сам по себе не гарантирует полную оплату —
+    _charge_run списывает min(price, balance) и всё равно завершает ролик, если
+    баланс просел (ручная правка админом). Бесплатный rerun такого недооплаченного
+    ролика запрещён; полностью оплаченного — разрешён."""
+    from toontales_ai.domain.enums import CreditTransactionType, Stage
+    from toontales_ai.domain.models import CreditTransaction
+    from toontales_ai.orchestration.idempotency import credit_run_charge_key
+    from toontales_ai.orchestration.pipeline_async import InvalidPartialRerunError, request_partial_rerun
+
+    price = price_from_duration(30)
+    user, project = _seed_user_and_project(db_session, credit_balance=price)
+
+    # COMPLETED-ролик, но списана лишь ЧАСТЬ цены (баланс просел мимо старт-проверки)
+    run = GenerationRun(
+        project_id=project.id, status=RunStatus.COMPLETED, duration_seconds=30, price=price
+    )
+    db_session.add(run)
+    db_session.flush()
+    db_session.add(
+        CreditTransaction(
+            user_id=user.id, run_id=run.id, type=CreditTransactionType.CHARGE,
+            amount=price - 1, idempotency_key=credit_run_charge_key(run.id),
+        )
+    )
+    db_session.commit()
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(InvalidPartialRerunError):
+            await request_partial_rerun(
+                session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
+            )
+
+    # доплатили до полной цены -> rerun проходит
+    db_session.query(CreditTransaction).filter_by(idempotency_key=credit_run_charge_key(run.id)).update(
+        {"amount": price}
+    )
+    db_session.commit()
+    async with AsyncSessionLocal() as session:
+        new_run = await request_partial_rerun(
+            session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
+        )
+        await session.commit()
+    assert new_run.parent_run_id == run.id

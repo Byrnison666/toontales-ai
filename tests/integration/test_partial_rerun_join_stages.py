@@ -33,6 +33,19 @@ def _seed_completed_pipeline_up_to_lipsync(session, *, scene_count: int = 2):
     session.add(run)
     session.flush()
 
+    # rerun разрешён только с полностью оплаченного родителя — досеиваем CHARGE на
+    # полную цену (как сделал бы _charge_run по успеху COMPOSITION).
+    from toontales_ai.domain.enums import CreditTransactionType
+    from toontales_ai.orchestration.idempotency import credit_run_charge_key
+
+    session.add(
+        CreditTransaction(
+            user_id=user.id, run_id=run.id, type=CreditTransactionType.CHARGE,
+            amount=run.price, idempotency_key=credit_run_charge_key(run.id),
+        )
+    )
+    session.flush()
+
     storyboard_key = task_idempotency_key(run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, input_version="v1")
     session.add(
         Task(

@@ -28,7 +28,7 @@ from toontales_ai.adapters.video.runway import (
     RunwayTransientError,
 )
 from toontales_ai.config.settings import get_settings
-from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, Stage, TaskStatus
+from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, RunStatus, Stage, TaskStatus
 from toontales_ai.domain.models import GenerationRun, MediaAsset, Scene, Task
 from toontales_ai.orchestration import provider_semaphore
 from toontales_ai.orchestration.pipeline_sync import complete_task
@@ -323,6 +323,18 @@ def process_task(self: CeleryTask, task_id: str) -> None:
         task = session.execute(select(Task).where(Task.id == uuid.UUID(task_id)).with_for_update()).scalar_one_or_none()
         if task is None or task.status not in (TaskStatus.PENDING, TaskStatus.RETRY_SCHEDULED):
             return  # уже обработан или больше не существует — идемпотентный no-op
+
+        # Прайсинг v3: если run уже терминален (reconciler провалил его через
+        # _fail_run_of, либо отмена) — не отправлять задачу провайдеру. Иначе
+        # прочие задачи проваленного ролика доигрывали бы до своих таймаутов, жгя
+        # деньги провайдеров (Runway/ElevenLabs) без шанса на списание (charge
+        # только по успеху COMPOSITION). Терминализуем задачу как CANCELED.
+        run = session.get(GenerationRun, task.run_id)
+        if run is not None and run.status in (RunStatus.FAILED, RunStatus.CANCELED):
+            task.status = TaskStatus.CANCELED
+            task.error_payload = {"code": "RUN_TERMINAL", "detail": f"run already {run.status.value}"}
+            session.commit()
+            return
 
         # Admission control ДО перевода в SUBMITTING (иначе занятый слот жёг бы
         # attempt_no зря): для стадий с лимитом concurrency пытаемся занять слот.
