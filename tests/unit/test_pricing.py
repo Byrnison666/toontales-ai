@@ -85,3 +85,15 @@ def test_package_sells_sparks_at_markup_over_cost():
 def test_package_price_rounds_up_to_step():
     for sparks in SPARK_PACKAGE_SIZES:
         assert package_price_rub(sparks) % PRICE_ROUNDING_RUB == 0
+
+
+def test_clip_distribution_sums_exactly_to_duration():
+    """Дрейф недопустим: сумма клипов по сценам = ровно выбранная длительность,
+    иначе видео короче оплаченного (недодача) или мы дарим лишние секунды."""
+    from toontales_ai.orchestration.pricing import clip_seconds_for_scene
+
+    for d in range(MIN_DURATION_SECONDS, MAX_DURATION_SECONDS + 1):
+        n = scene_count_for_duration(d)
+        clips = [clip_seconds_for_scene(d, n, i) for i in range(n)]
+        assert sum(clips) == d, f"d={d}: сумма клипов {sum(clips)} != {d}"
+        assert all(2 <= c <= 10 for c in clips)

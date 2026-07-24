@@ -28,9 +28,7 @@ REQUEST_TIMEOUT_SECONDS = 60.0
 # Прайсинг v3: число сцен ФИКСИРОВАНО выбранной длительностью ролика
 # (pricing.scene_count_for_duration), а не выбирается моделью. Схема и промпт
 # строятся под это N в submit() — модель обязана вернуть ровно N сцен, каждый
-# клип детерминирован (pricing.clip_seconds_for). MIN_SCENES — нижняя граница для
-# защиты от битого ответа (schema-required).
-MIN_SCENES = 1
+# клип детерминирован (pricing.clip_seconds_for). Схема требует ровно N сцен.
 
 SCENE_SCHEMA = {
     "type": "object",
@@ -163,12 +161,15 @@ class AnthropicStoryboardAdapter:
         except json.JSONDecodeError as exc:
             raise AnthropicAPIError(f"Anthropic structured output is not valid JSON: {exc}") from exc
 
-        # Объект scene_1..scene_N -> упорядоченный список. Схема требует все N ключей,
-        # но защищаемся от битого ответа нижней границей.
+        # Объект scene_1..scene_N -> упорядоченный список. Схема требует ВСЕ N ключей
+        # (required=all), но проверяем и на парсинге: меньше N сцен изменило бы
+        # фактическую длительность после фиксации цены (P1, ревью денежных путей) —
+        # клипы перераспределятся, но при недоборе сцен теряется маржа/качество.
+        # Лучше отклонить и ретраить, чем собрать не тот ролик за фикс-цену.
         scenes = [parsed[key] for key in scene_keys if key in parsed]
-        if len(scenes) < MIN_SCENES:
+        if len(scenes) != scene_count:
             raise AnthropicAPIError(
-                f"Anthropic returned {len(scenes)} scenes, expected {scene_count}"
+                f"Anthropic returned {len(scenes)} scenes, expected exactly {scene_count}"
             )
 
         result = ProviderJobResult(

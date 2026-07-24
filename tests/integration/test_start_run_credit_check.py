@@ -83,3 +83,37 @@ async def test_start_run_rejects_when_active_runs_would_oversubscribe(db_session
         )
         await session.commit()
     assert second.status == RunStatus.RUNNING
+
+
+async def test_partial_rerun_rejected_on_unpaid_parent(db_session):
+    """P0 (ревью денежных путей): rerun бесплатен (price=0), поэтому разрешён только
+    с УСПЕШНО завершённого (оплаченного) ролика. Иначе провал (ничего не списал)
+    чинился бы бесплатным rerun STORYBOARD -> полный ролик даром."""
+    from toontales_ai.orchestration.pipeline_async import InvalidPartialRerunError, request_partial_rerun
+
+    price = price_from_duration(30)
+    user, project = _seed_user_and_project(db_session, credit_balance=price)
+
+    async with AsyncSessionLocal() as session:
+        run = await start_run(
+            session, project_id=project.id, user_id=user.id, script_text="a story", duration_seconds=30
+        )
+        await session.commit()
+
+    # run в RUNNING (не оплачен) — rerun STORYBOARD должен быть отклонён
+    from toontales_ai.domain.enums import Stage
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(InvalidPartialRerunError):
+            await request_partial_rerun(
+                session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
+            )
+
+    # провалившийся родитель — тоже отклонён
+    db_session.query(GenerationRun).filter_by(id=run.id).update({"status": RunStatus.FAILED})
+    db_session.commit()
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(InvalidPartialRerunError):
+            await request_partial_rerun(
+                session, parent_run_id=run.id, stage=Stage.STORYBOARD, scene_id=None, user_id=user.id
+            )

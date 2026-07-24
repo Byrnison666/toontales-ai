@@ -8,7 +8,7 @@ VIDEO+AUDIO; COMPOSITION требует LIPSYNC по всем сценам) до
 import uuid
 
 from toontales_ai.adapters.base import ProviderJobResult
-from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, RetentionClass, Stage, TaskStatus
+from toontales_ai.domain.enums import MediaKind, ProviderJobStatus, RetentionClass, RunStatus, Stage, TaskStatus
 from toontales_ai.orchestration.pipeline_sync import complete_task
 from toontales_ai.domain.models import CreditTransaction, GenerationRun, MediaAsset, Project, Scene, Task, User
 from toontales_ai.orchestration.idempotency import task_idempotency_key
@@ -29,7 +29,7 @@ def _seed_completed_pipeline_up_to_lipsync(session, *, scene_count: int = 2):
     session.add(project)
     session.flush()
 
-    run = GenerationRun(project_id=project.id)
+    run = GenerationRun(project_id=project.id, status=RunStatus.COMPLETED, duration_seconds=30, price=3170)
     session.add(run)
     session.flush()
 

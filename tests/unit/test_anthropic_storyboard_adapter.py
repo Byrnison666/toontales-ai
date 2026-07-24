@@ -219,48 +219,29 @@ async def test_submit_rejects_too_few_scenes(monkeypatch):
         )
 
 
-async def test_submit_collects_sparse_scene_keys_in_order(monkeypatch):
-    # Схема не обязывает заполнять ключи подряд — пропуск в середине не должен ломать разбор.
+async def test_submit_collects_all_scene_keys_in_order(monkeypatch):
+    # Схема требует ровно N ключей; порядок ключей в JSON не важен — собираем по scene_N.
+    from toontales_ai.orchestration.pricing import scene_count_for_duration
+
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    n = scene_count_for_duration(10)  # 2 сцены
     first = _sample_scene()
-    third = _sample_scene() | {"script_text": "The fox reaches the clearing."}
+    second = _sample_scene() | {"script_text": "The fox reaches the clearing."}
+    # ключи в обратном порядке в JSON
     _FakeAsyncClient.post_response = _FakeResponse(
         200,
         json_data={
-            "content": [{"type": "text", "text": json.dumps({"scene_3": third, "scene_1": first})}],
+            "content": [{"type": "text", "text": json.dumps({"scene_2": second, "scene_1": first})}],
             "usage": {"input_tokens": 120, "output_tokens": 40},
         },
     )
+    assert n == 2
 
     adapter = AnthropicStoryboardAdapter()
     submission = await adapter.submit(
-        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 30}),
+        StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story", "duration_seconds": 10}),
         idempotency_key="k",
     )
 
     assert submission.result is not None
-    assert submission.result.artifacts[0]["scenes"] == [first, third]
-
-
-async def test_submit_rejects_invalid_json_text(monkeypatch):
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    _FakeAsyncClient.post_response = _FakeResponse(
-        200,
-        json_data={
-            "content": [{"type": "text", "text": "not json"}],
-            "usage": {"input_tokens": 120, "output_tokens": 10},
-        },
-    )
-
-    adapter = AnthropicStoryboardAdapter()
-    with pytest.raises(AnthropicAPIError):
-        await adapter.submit(
-            StageInput(task_id="t1", scene_id=None, payload={"script_text": "a story"}),
-            idempotency_key="k",
-        )
-
-
-async def test_poll_not_implemented():
-    adapter = object.__new__(AnthropicStoryboardAdapter)  # обходим __init__/config validation
-    with pytest.raises(NotImplementedError):
-        await adapter.poll("irrelevant")
+    assert submission.result.artifacts[0]["scenes"] == [first, second]

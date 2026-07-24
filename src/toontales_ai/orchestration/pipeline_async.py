@@ -245,6 +245,17 @@ async def request_partial_rerun(
         await session.execute(select(GenerationRun).where(GenerationRun.id == parent_run_id))
     ).scalar_one()
 
+    # Прайсинг v3, P0 (ревью денежных путей): rerun бесплатен (price=0), поэтому
+    # разрешён ТОЛЬКО с успешно завершённого и ОПЛАЧЕННОГО ролика. Иначе провал
+    # (ничего не списал) можно было бы "починить" бесплатным rerun STORYBOARD и
+    # получить полный ролик даром. COMPLETED => COMPOSITION прошла => _charge_run
+    # списал цену (или это сам rerun с price=0, чей корень — оплаченный ролик).
+    if parent_run.status != RunStatus.COMPLETED:
+        raise InvalidPartialRerunError(
+            f"parent run must be COMPLETED to rerun (got {parent_run.status.value}): "
+            "rerun is free and only regenerates an already-paid video"
+        )
+
     # IDOR-проверка (review.md §6): scene_id обязателен для scene-scoped стадий и должен
     # принадлежать именно parent_run, иначе чужая сцена может быть прочитана/переотправлена
     # провайдеру под видом ownership-проверенного run.

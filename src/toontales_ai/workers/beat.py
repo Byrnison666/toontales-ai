@@ -46,6 +46,20 @@ def dispatch_outbox() -> int:
         return dispatch_once(session)
 
 
+def _fail_run_of(session, task) -> None:
+    """Прайсинг v3: reconcile-провал задачи должен провалить и весь GenerationRun,
+    иначе он навсегда числится RUNNING и _committed_active_price вечно урезает
+    платёжную ёмкость пользователя (P1, ревью денежных путей). Списания нет —
+    на старте баланс не трогали."""
+    from toontales_ai.domain.enums import RunStatus
+    from toontales_ai.domain.models import GenerationRun
+
+    run = session.get(GenerationRun, task.run_id)
+    if run is not None and run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
+        run.status = RunStatus.FAILED
+        run.finished_at = datetime.now(timezone.utc)
+
+
 @celery_app.task(name="toontales_ai.workers.beat.reconcile_stale_tasks")
 def reconcile_stale_tasks() -> None:
     from toontales_ai.workers.tasks import poll_task, process_task
@@ -95,7 +109,7 @@ def reconcile_stale_tasks() -> None:
         for task in stuck_submitting_expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "stuck in SUBMITTING past max task age"}
-            # прайсинг v3: возврата нет — на старте баланс не трогали
+            _fail_run_of(session, task)  # прайсинг v3: возврата нет, но run надо провалить
         for task in stuck_submitting_recoverable:
             task.status = TaskStatus.PENDING
         session.commit()
@@ -134,7 +148,7 @@ def reconcile_stale_tasks() -> None:
         for task in orphaned_pending_expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "orphaned in PENDING past max task age"}
-            # прайсинг v3: возврата нет — на старте баланс не трогали
+            _fail_run_of(session, task)  # прайсинг v3: возврата нет, но run надо провалить
         session.commit()
         orphaned_ids = [task.id for task in orphaned_pending_recoverable]
 
@@ -171,7 +185,7 @@ def reconcile_stale_tasks() -> None:
         for task in expired:
             task.status = TaskStatus.FAILED
             task.error_payload = {"code": "RECONCILE_TIMEOUT", "detail": "exceeded max task age"}
-            # прайсинг v3: возврата нет — на старте баланс не трогали
+            _fail_run_of(session, task)  # прайсинг v3: возврата нет, но run надо провалить
             if task.stage in provider_semaphore.SEMAPHORE_PROVIDER_BY_STAGE:
                 expired_semaphore_holders.append((str(task.id), task.stage))
         expired_ids = {t.id for t in expired}

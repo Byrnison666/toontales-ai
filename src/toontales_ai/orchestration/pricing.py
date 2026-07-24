@@ -59,9 +59,21 @@ def scene_count_for_duration(seconds: int) -> int:
 
 
 def clip_seconds_for(seconds: int, scene_count: int) -> int:
-    """Длина клипа одной сцены (целые секунды, в диапазоне Runway)."""
+    """Номинальная длина клипа (среднее), для промпта-подсказки раскадровке.
+    Точную длину каждой сцены даёт clip_seconds_for_scene (сумма = ровно D)."""
     raw = int((Decimal(seconds) / scene_count).to_integral_value(rounding=ROUND_HALF_UP))
     return max(_CLIP_MIN, min(_CLIP_MAX, raw))
+
+
+def clip_seconds_for_scene(seconds: int, scene_count: int, scene_index: int) -> int:
+    """Длина клипа конкретной сцены (0-indexed) так, чтобы СУММА по всем сценам
+    равнялась ровно D. Равномерное round давало дрейф ±3с — а отрицательный дрейф
+    это видео короче оплаченного (недодача клиенту). Здесь base=D//N секунд каждой,
+    первым (D%N) сценам +1 -> сумма = D. Границы [2,10] соблюдены по построению
+    scene_count_for_duration (2 <= D/N <= 10)."""
+    base, remainder = divmod(seconds, scene_count)
+    clip = base + 1 if scene_index < remainder else base
+    return max(_CLIP_MIN, min(_CLIP_MAX, clip))
 
 
 def _cost_usd_for_duration(seconds: int) -> Decimal:

@@ -208,19 +208,21 @@ def _failed_submission(error_code: str, error_detail: str) -> ProviderSubmission
     )
 
 
-def _scene_clip_seconds(session, run_id) -> int:
-    """Длина клипа сцены (сек), детерминированная выбранной длительностью ролика:
-    clip = clip_seconds_for(D, число сцен). Прайсинг v3 инвертирует поток —
-    длительность задаёт видео, а не наоборот. Число сцен берём фактическое
-    (Scene в run), оно = scene_count_for_duration(D) по построению fan-out."""
-    from toontales_ai.orchestration.pricing import clip_seconds_for
+def _scene_clip_seconds(session, task: Task) -> int:
+    """Длина клипа ЭТОЙ сцены (сек), детерминированная выбранной длительностью
+    ролика. Прайсинг v3 инвертирует поток — длительность задаёт видео. Клипы
+    распределены по сценам так, что их СУММА = ровно D (clip_seconds_for_scene),
+    иначе равномерный round недодавал бы клиенту секунды видео."""
+    from toontales_ai.orchestration.pricing import clip_seconds_for_scene
 
-    run = session.get(GenerationRun, run_id)
+    run = session.get(GenerationRun, task.run_id)
     scene_count = session.execute(
-        select(func.count()).select_from(Scene).where(Scene.generation_run_id == run_id)
+        select(func.count()).select_from(Scene).where(Scene.generation_run_id == task.run_id)
     ).scalar_one()
     scene_count = max(1, scene_count)
-    return clip_seconds_for(run.duration_seconds, scene_count)
+    scene = session.get(Scene, task.scene_id)
+    scene_index = scene.scene_index if scene is not None else 0
+    return clip_seconds_for_scene(run.duration_seconds, scene_count, scene_index)
 
 
 def _build_stage_input(session, task: Task) -> StageInput:
@@ -236,6 +238,19 @@ def _build_stage_input(session, task: Task) -> StageInput:
                 "camera_movement": scene.camera_movement,
                 "mood_notes": scene.mood_notes,
             }
+            if task.stage == Stage.AUDIO:
+                # Прайсинг v3 (P1, ревью денежных путей): ElevenLabs тарифицирует
+                # ФАКТИЧЕСКИЕ символы, а цена ролика посчитана из длительности. Без
+                # кэпа verbose/injected раскадровка на коротком ролике съедает маржу
+                # (аудио всё равно подрежется до клипа в composition, но списание с
+                # провайдера уже по полному тексту). Режем текст под длину клипа с
+                # запасом; промпт раскадровки и так просит не длиннее.
+                from toontales_ai.orchestration.pricing import AUDIO_CHARS_PER_SECOND
+
+                clip_s = _scene_clip_seconds(session, task)
+                max_chars = int(clip_s * float(AUDIO_CHARS_PER_SECOND) * 1.5)
+                if len(payload["script_text"]) > max_chars:
+                    payload["script_text"] = payload["script_text"][:max_chars]
             if task.stage == Stage.VIDEO:
                 # v2.md stage 3: "Вход stage: source image, motion prompt, camera
                 # movement instructions..." — реальному video-адаптеру (RunwayAdapter)
@@ -268,7 +283,7 @@ def _build_stage_input(session, task: Task) -> StageInput:
                 # длительностью ролика, а НЕ выводится из озвучки. Итог: сумма
                 # клипов ≈ выбранная длительность; где озвучка короче — в конце
                 # тишина (composition накладывает аудио, не подрезая видео).
-                payload["duration_seconds"] = _scene_clip_seconds(session, task.run_id)
+                payload["duration_seconds"] = _scene_clip_seconds(session, task)
             elif task.stage == Stage.LIPSYNC:
                 # LIPSYNC — join-стадия (STAGE_PREDECESSORS: требует VIDEO и AUDIO).
                 # Реальному адаптеру (SyncAdapter) нужны HTTPS URL уже готовых
