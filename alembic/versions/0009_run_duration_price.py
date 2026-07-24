@@ -38,6 +38,15 @@ def _fail_if_pipeline_not_drained() -> None:
 
 
 def upgrade() -> None:
+    # Блокируем tasks на запись ДО drain-проверки: старый v2-API во время
+    # `up --build` ещё жив и мог бы между count(*) и DDL создать новый v2-run
+    # (INSERT в tasks с холдом в v2-схеме) — тогда drain-инвариант нарушится уже
+    # после проверки, и после переключения на v3 останется открытый холд навсегда.
+    # SHARE ROW EXCLUSIVE конфликтует с ROW EXCLUSIVE (INSERT/UPDATE tasks), но
+    # пропускает чтения; ALTER generation_runs ниже берёт свой ACCESS EXCLUSIVE.
+    # Тот же приём, что в 0007. Снимается автоматически на COMMIT миграции.
+    op.execute("LOCK TABLE tasks IN SHARE ROW EXCLUSIVE MODE")
+
     _fail_if_pipeline_not_drained()
     # Цена ролика теперь детерминирована из выбранной длительности и списывается
     # один раз на успехе (без резерва). Не бэкфиллим legacy-раны: у них 0, они уже

@@ -97,6 +97,42 @@ curl -s https://<домен>/api/v1/pricing/packages
 раза (3275/1680), прайс отдаёт три пакета. Последующие выкатки — обычный
 `up -d --build`; drain нужен только для 0007.
 
+### Выкатка прайсинга v3 (миграция `0009_run_duration_price`)
+
+Особый случай, как и 0007: переход с v2 (hold/settle — резерв на старте, доплата
+по факту) на v3 (цена детерминирована длительностью, списывается один раз на
+успехе, без резерва). v3-код больше не делает settle/release, поэтому
+незавершённый v2-ран с уже списанным HOLD'ом при переключении остался бы с
+открытым холдом навсегда — недооплата. Миграция 0009 содержит тот же drain-guard,
+что и 0007: **отказывается запускаться, пока в пайплайне есть незавершённые
+задачи**. Порядок — drain-first (одноразово, только на этой выкатке):
+
+```bash
+# 1. Бэкап и снимок «до» (балансы + открытые холды)
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U toontales toontales | gzip > ~/backups/pre-pricing-v3-$(date +%F).sql.gz
+
+# 2. Остановить обработку, дать пайплайну опустеть (должно вернуть 0)
+docker compose -f docker-compose.prod.yml stop worker beat
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U toontales -d toontales -tc \
+  "SELECT count(*) FROM tasks WHERE status::text IN \
+   ('pending','submitting','waiting_provider','processing','retry_scheduled')"
+
+# 3. Обновить код и прогнать миграцию (migrate дойдёт до 0009; если задачи ещё
+#    в полёте — упадёт с понятной ошибкой, это защита drain-guard, а не сбой)
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 4. Проверка
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U toontales -d toontales \
+  -c "SELECT version_num FROM alembic_version" \
+  -c "\d generation_runs" | grep -E "duration_seconds|price"
+```
+
+Ожидаемо: версия `0009_run_duration_price`, у `generation_runs` появились колонки
+`duration_seconds` и `price` (legacy-раны с 0 — они уже оплачены по v2). Последующие
+выкатки — обычный `up -d --build`; drain нужен только для 0007 и 0009.
+
 ### Бэкапы БД
 
 `deploy/scripts/toontales-backup.sh` делает `pg_dump` из контейнера postgres,
