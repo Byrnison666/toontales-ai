@@ -70,10 +70,25 @@ async def test_manual_balance_minus_spend(db_session):
 
 
 async def test_manual_balance_low_flag(db_session):
-    set_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    set_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     db_session.add(ProviderManualBalance(provider="anthropic", amount_usd=Decimal("3"), set_at=set_at))
     db_session.commit()
     async with AsyncSessionLocal() as session:
         entry = await _anthropic_manual(session)
     assert entry["available"] is True
     assert entry["low"] is True  # $3 < $5 порог
+
+
+async def test_manual_balance_insert_via_async_session_naive_utc(db_session):
+    """Регрессия: колонка set_at naive (TIMESTAMP WITHOUT TIME ZONE). asyncpg (прод-
+    драйвер) отвергает tz-aware datetime -> раньше POST падал 500. Вставка через
+    async-сессию с naive UTC должна проходить."""
+    from datetime import datetime as _dt
+
+    naive_utc = _dt.now(timezone.utc).replace(tzinfo=None)
+    async with AsyncSessionLocal() as session:
+        session.add(ProviderManualBalance(provider="anthropic", amount_usd=Decimal("4.92"), set_at=naive_utc))
+        await session.commit()  # упало бы DataError при tz-aware
+        entry = await _anthropic_manual(session)
+    assert entry["available"] is True
+    assert entry["balance_usd"] == "4.92"

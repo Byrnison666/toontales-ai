@@ -557,7 +557,9 @@ async def set_provider_manual_balance(
     from toontales_ai.orchestration.provider_balances import get_provider_balances, invalidate_cache
 
     row = await session.get(ProviderManualBalance, body.provider)
-    now = datetime.now(timezone.utc)
+    # naive UTC — колонка set_at TIMESTAMP WITHOUT TIME ZONE, как везде в проекте
+    # (asyncpg отвергает tz-aware datetime в naive-колонку). См. beat.py reconciler.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     if row is None:
         session.add(
             ProviderManualBalance(
