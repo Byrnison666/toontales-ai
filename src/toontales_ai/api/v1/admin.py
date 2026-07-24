@@ -518,17 +518,58 @@ class ProviderBalanceItem(BaseModel):
     low: bool
     error: str | None
     console_url: str
+    manual: bool = False  # остаток вводится вручную (нет API) — фронт покажет кнопку
+    set_at: str | None = None
 
 
 class ProviderBalancesResponse(BaseModel):
     providers: list[ProviderBalanceItem]
 
 
+class ProviderManualBalanceRequest(BaseModel):
+    provider: Literal["anthropic"]
+    amount_usd: float = Field(ge=0)
+    note: str | None = None
+
+
 @router.get("/provider-balances", response_model=ProviderBalancesResponse)
-async def provider_balances(refresh: bool = False) -> ProviderBalancesResponse:
+async def provider_balances(
+    refresh: bool = False, session: AsyncSession = Depends(get_db_session)
+) -> ProviderBalancesResponse:
     """Реальные остатки на счетах провайдеров (когда/какой пополнять). refresh=1
     обходит кеш и дёргает API провайдеров напрямую."""
     from toontales_ai.orchestration.provider_balances import get_provider_balances
 
-    items = await get_provider_balances(force_refresh=refresh)
+    items = await get_provider_balances(session, force_refresh=refresh)
+    return ProviderBalancesResponse(providers=[ProviderBalanceItem(**item) for item in items])
+
+
+@router.post("/provider-balances/manual", response_model=ProviderBalancesResponse)
+async def set_provider_manual_balance(
+    body: ProviderManualBalanceRequest, session: AsyncSession = Depends(get_db_session)
+) -> ProviderBalancesResponse:
+    """Задать остаток провайдера, у которого нет API остатка (Anthropic). Дальше
+    он уменьшается на наш расход по этому провайдеру автоматически."""
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from toontales_ai.domain.models import ProviderManualBalance
+    from toontales_ai.orchestration.provider_balances import get_provider_balances, invalidate_cache
+
+    row = await session.get(ProviderManualBalance, body.provider)
+    now = datetime.now(timezone.utc)
+    if row is None:
+        session.add(
+            ProviderManualBalance(
+                provider=body.provider, amount_usd=Decimal(str(body.amount_usd)), set_at=now, note=body.note
+            )
+        )
+    else:
+        row.amount_usd = Decimal(str(body.amount_usd))
+        row.set_at = now  # новый ввод — расход считаем заново с этого момента
+        row.note = body.note
+    await session.commit()
+    await invalidate_cache()
+
+    items = await get_provider_balances(session, force_refresh=True)
     return ProviderBalancesResponse(providers=[ProviderBalanceItem(**item) for item in items])

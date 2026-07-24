@@ -80,9 +80,3 @@ async def test_elevenlabs_remaining_computed(fake_http):
     assert entry["balance"] == 70_000
     assert entry["low"] is False  # 70k > 20k порог
     assert entry["reset_at"] is not None
-
-
-def test_anthropic_is_console_only():
-    entry = pb._anthropic()
-    assert entry["available"] is False
-    assert "console.anthropic.com" in entry["console_url"]

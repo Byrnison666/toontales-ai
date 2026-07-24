@@ -130,10 +130,18 @@ export interface ProviderBalance {
   low: boolean
   error: string | null
   console_url: string
+  manual?: boolean
+  set_at?: string | null
 }
 
 export interface ProviderBalancesResponse {
   providers: ProviderBalance[]
+}
+
+export interface ProviderManualBalanceRequest {
+  provider: 'anthropic'
+  amount_usd: number
+  note?: string | null
 }
 
 interface ErrorBody {
@@ -245,6 +253,12 @@ export const adminApi = {
       `/api/v1/admin/provider-balances${refresh ? '?refresh=1' : ''}`,
       { signal },
     ),
+  setProviderManualBalance: (payload: ProviderManualBalanceRequest, signal?: AbortSignal) =>
+    apiRequest<ProviderBalancesResponse>('/api/v1/admin/provider-balances/manual', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal,
+    }),
   editBalance: (userId: string, payload: BalanceEditRequest, signal?: AbortSignal) =>
     apiRequest<BalanceEditResponse>(`/api/v1/admin/users/${encodeURIComponent(userId)}/balance`, {
       method: 'POST',

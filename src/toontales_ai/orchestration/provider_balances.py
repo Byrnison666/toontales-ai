@@ -147,25 +147,58 @@ async def _elevenlabs() -> dict:
     return entry
 
 
-def _anthropic() -> dict:
-    # У Anthropic нет публичного API остатка prepaid-баланса (есть только Usage &
-    # Cost Admin API, но не остаток). Пополнение/остаток — только в консоли.
-    return {
+async def _anthropic_manual(session) -> dict:
+    # У Anthropic нет публичного API остатка prepaid-баланса. Поэтому админ вводит
+    # остаток вручную (в USD) на момент set_at, а актуальный остаток = введённая
+    # сумма минус наш расход по storyboard (Anthropic Haiku) с этого момента.
+    from decimal import Decimal
+
+    from sqlalchemy import func, select
+
+    from toontales_ai.domain.enums import Stage
+    from toontales_ai.domain.models import ProviderManualBalance, Task
+
+    settings = get_settings()
+    entry = {
         "provider": "anthropic",
         "label": "Anthropic — сценарий (раскадровка)",
         "available": False,
         "balance": None,
-        "unit": None,
+        "unit": "usd",
         "balance_usd": None,
-        "note": "остаток смотреть в консоли — API его не отдаёт",
+        "note": None,
         "reset_at": None,
         "low": False,
         "error": None,
         "console_url": "https://console.anthropic.com/settings/billing",
+        "manual": True,  # фронт покажет кнопку «Задать остаток»
     }
+    row = await session.get(ProviderManualBalance, "anthropic")
+    if row is None:
+        entry["note"] = "остаток не задан — введи вручную (кнопка «Задать остаток»)"
+        return entry
+
+    spend = (
+        await session.execute(
+            select(func.coalesce(func.sum(Task.real_cost_usd), 0)).where(
+                Task.stage == Stage.STORYBOARD, Task.finished_at >= row.set_at
+            )
+        )
+    ).scalar_one()
+    remaining = Decimal(row.amount_usd) - Decimal(str(spend))
+    entry["available"] = True
+    entry["balance"] = float(remaining)
+    entry["balance_usd"] = _usd(remaining)
+    entry["set_at"] = row.set_at.isoformat()
+    entry["note"] = (
+        f"задано ${_usd(row.amount_usd)} от {row.set_at.date().isoformat()}, "
+        f"потрачено ${_usd(spend)} с тех пор"
+    )
+    entry["low"] = remaining < Decimal(str(settings.anthropic_low_usd_threshold))
+    return entry
 
 
-async def get_provider_balances(*, force_refresh: bool = False) -> list[dict]:
+async def get_provider_balances(session, *, force_refresh: bool = False) -> list[dict]:
     settings = get_settings()
     client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
@@ -174,10 +207,22 @@ async def get_provider_balances(*, force_refresh: bool = False) -> list[dict]:
             if cached:
                 return json.loads(cached)
 
-        runway, elevenlabs = await asyncio.gather(_runway(), _elevenlabs())
-        balances = [runway, elevenlabs, _anthropic()]
+        runway, elevenlabs, anthropic = await asyncio.gather(
+            _runway(), _elevenlabs(), _anthropic_manual(session)
+        )
+        balances = [runway, elevenlabs, anthropic]
 
         await client.set(_CACHE_KEY, json.dumps(balances), ex=settings.provider_balance_cache_seconds)
         return balances
+    finally:
+        await client.aclose()
+
+
+async def invalidate_cache() -> None:
+    """Сбросить кеш сводки — после ручной правки остатка, чтобы показать сразу."""
+    settings = get_settings()
+    client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.delete(_CACHE_KEY)
     finally:
         await client.aclose()

@@ -259,6 +259,20 @@ class CreditTransaction(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class ProviderManualBalance(Base):
+    """Вручную заданный админом остаток на счёте провайдера (USD) на момент set_at.
+    Для провайдеров без API остатка (Anthropic): актуальный остаток = amount_usd
+    минус наш расход по этому провайдеру с set_at (real_cost_usd задач). Одна
+    строка на провайдера."""
+
+    __tablename__ = "provider_manual_balances"
+
+    provider: Mapped[str] = mapped_column(primary_key=True)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    set_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    note: Mapped[str | None] = mapped_column(nullable=True)
+
+
 class PipelineOutbox(Base):
     """Единственное место, откуда что-либо реально уходит в Celery.
     Task+CreditTransaction+Outbox коммитятся в одной Postgres-транзакции;

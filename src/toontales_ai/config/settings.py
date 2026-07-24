@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     # подсветить, что пора пополнять. Кеш, чтобы не дёргать API на каждый заход.
     runway_low_credits_threshold: int = 1000  # ~$10 (× $0.01/кредит)
     elevenlabs_low_chars_threshold: int = 20_000  # ~22 мин озвучки
+    anthropic_low_usd_threshold: float = 5.0  # для вручную заданного остатка Anthropic
     provider_balance_cache_seconds: int = 300
 
     elevenlabs_api_key: str = ""
