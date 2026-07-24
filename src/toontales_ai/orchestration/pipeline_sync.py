@@ -105,6 +105,7 @@ def _charge_run(session: Session, run: GenerationRun) -> None:
             "run charge capped by balance",
             extra={"run_id": str(run.id), "price": run.price, "charged": amount},
         )
+        metrics.RUN_CHARGE_CAPPED_BY_BALANCE_TOTAL.inc()
     if amount <= 0:
         return
 
@@ -385,6 +386,7 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
             run = session.get(GenerationRun, task.run_id)
             run.status = RunStatus.COMPLETED
             run.finished_at = datetime.now(timezone.utc)
+            metrics.RUN_OUTCOMES_TOTAL.labels(outcome="completed").inc()
             # Единственное списание за ролик — здесь, по факту готового результата.
             _charge_run(session, run)
 
@@ -403,6 +405,7 @@ def complete_task(session: Session, *, task_id: uuid.UUID, result: ProviderJobRe
             if run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
                 run.status = RunStatus.FAILED
                 run.finished_at = datetime.now(timezone.utc)
+                metrics.RUN_OUTCOMES_TOTAL.labels(outcome="failed").inc()
         else:
             task.retry_count += 1
             task.status = TaskStatus.RETRY_SCHEDULED

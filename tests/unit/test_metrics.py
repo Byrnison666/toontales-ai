@@ -11,6 +11,8 @@ def test_metrics_have_expected_types_and_labels() -> None:
         metrics.TASK_REAL_COST_USD_TOTAL: (Counter, ("stage",)),
         metrics.PROVIDER_ERRORS_TOTAL: (Counter, ("stage", "error_code")),
         metrics.RECONCILED_TASKS_TOTAL: (Counter, ("reconciliation_type",)),
+        metrics.RUN_CHARGE_CAPPED_BY_BALANCE_TOTAL: (Counter, ()),
+        metrics.RUN_OUTCOMES_TOTAL: (Counter, ("outcome",)),
     }
 
     for metric, (metric_type, labelnames) in expected.items():

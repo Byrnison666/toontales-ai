@@ -58,6 +58,7 @@ def _fail_run_of(session, task) -> None:
     if run is not None and run.status not in (RunStatus.COMPLETED, RunStatus.FAILED):
         run.status = RunStatus.FAILED
         run.finished_at = datetime.now(timezone.utc)
+        metrics.RUN_OUTCOMES_TOTAL.labels(outcome="failed").inc()
 
 
 @celery_app.task(name="toontales_ai.workers.beat.reconcile_stale_tasks")

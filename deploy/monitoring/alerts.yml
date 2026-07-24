@@ -13,21 +13,20 @@
 groups:
   - name: margin_guard
     rules:
-      - alert: ProviderPriceDriftDetected
-        # Фактическая себестоимость задачи превысила верхнюю границу холда.
-        # Значит либо тариф провайдера вырос, либо параметры стадии вышли за
-        # ожидаемый диапазон. В обоих случаях наценка на этих задачах ниже
-        # заданной: списать больше холда нечем.
-        expr: increase(toontales_price_capped_by_hold_total[1h]) > 0
+      - alert: RunChargeCappedByBalance
+        # Прайсинг v3: списание за успешный ролик зажато балансом (списали меньше
+        # price). Баланс просел мимо старт-проверки — как правило, ручная правка
+        # админом вниз во время активного ролика. Это недополученная выручка и
+        # сигнал возможного абуза.
+        expr: increase(toontales_run_charge_capped_by_balance_total[1h]) > 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "Себестоимость {{ $labels.stage }} вышла за верхнюю границу холда"
+          summary: "Списание за ролик зажато балансом (недоплата)"
           description: >-
-            Списание зажато холдом — наценка ниже целевой. Сверить тариф провайдера
-            с константами в orchestration/real_cost.py и поднять
-            STAGE_COST_USD_MAX для этой стадии.
+            _charge_run списал меньше price: баланс просел мимо старт-проверки.
+            Проверить историю ручных правок баланса (admin) и ledger по этим ранам.
 
       - alert: TariffReviewOverdue
         # Тариф давно не сверяли с прайс-листом руками. Само по себе не инцидент,
@@ -75,3 +74,22 @@ groups:
         annotations:
           summary: "Реконсиляция вытаскивает много задач ({{ $labels.reconciliation_type }})"
           description: "Проверить доставку webhook/poll от провайдеров."
+
+      - alert: RunFailureRateHigh
+        # Прайсинг v3 не списывает на старте: провалившийся ролик = сожжённые
+        # деньги провайдеров (Runway/ElevenLabs) без выручки. Высокая доля провалов
+        # — либо сбой пайплайна/провайдера, либо абуз (гонять до провала). За окно
+        # считаем долю failed среди терминальных исходов.
+        expr: >-
+          sum(increase(toontales_run_outcomes_total{outcome="failed"}[1h]))
+          /
+          clamp_min(sum(increase(toontales_run_outcomes_total[1h])), 1) > 0.3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая доля проваленных роликов (>30% за час)"
+          description: >-
+            Провал не списывает с юзера, но провайдерские расходы уже понесены.
+            Проверить ошибки провайдеров (toontales_provider_errors_total) и
+            паттерн по юзерам (возможен абуз длинными роликами до провала).

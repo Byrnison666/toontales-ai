@@ -48,10 +48,15 @@ TASK_REAL_COST_USD_TOTAL = Counter(
     "Cumulative real USD cost of completed tasks",
     ["stage"],
 )
-PRICE_CAPPED_BY_HOLD_TOTAL = Counter(
-    "toontales_price_capped_by_hold_total",
-    "Tasks whose actual cost exceeded the hold ceiling (markup below target)",
-    ["stage"],
+RUN_CHARGE_CAPPED_BY_BALANCE_TOTAL = Counter(
+    "toontales_run_charge_capped_by_balance_total",
+    "Runs whose success charge was capped below price by insufficient balance "
+    "(underpayment — balance dropped past the start check, e.g. manual admin edit)",
+)
+RUN_OUTCOMES_TOTAL = Counter(
+    "toontales_run_outcomes_total",
+    "Generation runs reaching a terminal state",
+    ["outcome"],
 )
 TARIFF_AGE_DAYS = Gauge(
     "toontales_tariff_age_days",
